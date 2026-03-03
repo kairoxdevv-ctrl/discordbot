@@ -3,8 +3,10 @@ import io
 import logging
 import os
 import re
+import signal
 import threading
 import time
+from collections import defaultdict, deque
 from datetime import timedelta
 from pathlib import Path
 
@@ -60,6 +62,54 @@ try:
 except Exception:
     CONFIGTEST_OWNER_ID = 1451546709422247987
 _BACKGROUND_TASKS_STARTED = False
+
+
+class AbuseGuard:
+    def __init__(self):
+        self._lock = threading.RLock()
+        self._hits_user = defaultdict(deque)
+        self._hits_guild = defaultdict(deque)
+        self._cleanup_at = 0.0
+        self.user_limit = max(3, int(os.getenv("COMMAND_RATE_LIMIT_PER_USER", "12")))
+        self.guild_limit = max(10, int(os.getenv("COMMAND_RATE_LIMIT_PER_GUILD", "80")))
+        self.window_sec = max(3, int(os.getenv("COMMAND_RATE_LIMIT_WINDOW_SEC", "30")))
+
+    def allow(self, guild_id: int, user_id: int, command: str) -> tuple[bool, int]:
+        now = time.time()
+        key_user = (int(guild_id), int(user_id), str(command))
+        key_guild = (int(guild_id), str(command))
+        with self._lock:
+            if (now - self._cleanup_at) > 300:
+                cutoff = now - self.window_sec
+                for bucket in (self._hits_user, self._hits_guild):
+                    stale_keys = []
+                    for key, dq in bucket.items():
+                        while dq and dq[0] < cutoff:
+                            dq.popleft()
+                        if not dq:
+                            stale_keys.append(key)
+                    for key in stale_keys:
+                        bucket.pop(key, None)
+                self._cleanup_at = now
+
+            q_user = self._hits_user[key_user]
+            q_guild = self._hits_guild[key_guild]
+            cutoff = now - self.window_sec
+            while q_user and q_user[0] < cutoff:
+                q_user.popleft()
+            while q_guild and q_guild[0] < cutoff:
+                q_guild.popleft()
+            if len(q_user) >= self.user_limit or len(q_guild) >= self.guild_limit:
+                oldest = q_user[0] if q_user else (q_guild[0] if q_guild else now)
+                retry_after = max(1, int(self.window_sec - (now - oldest)))
+                return False, retry_after
+            q_user.append(now)
+            q_guild.append(now)
+            return True, 0
+
+
+ABUSE_GUARD = AbuseGuard()
+DASHBOARD_THREAD = None
 
 
 async def _task_handler(guild_id: str, payload: dict):
@@ -238,6 +288,20 @@ def has_moderation_access(interaction: discord.Interaction, cfg: dict) -> bool:
     if not allowed_roles:
         return False
     return any(str(r.id) in allowed_roles for r in interaction.user.roles)
+
+
+async def enforce_command_rate_limit(interaction: discord.Interaction, command_name: str) -> bool:
+    if not interaction.guild or not isinstance(interaction.user, discord.Member):
+        return False
+    allowed, retry_after = ABUSE_GUARD.allow(interaction.guild.id, interaction.user.id, command_name)
+    if allowed:
+        return True
+    if not interaction.response.is_done():
+        await interaction.response.send_message(
+            f"Rate limited. Try again in {retry_after}s.",
+            ephemeral=True,
+        )
+    return False
 
 
 def _ticket_owner_id_from_topic(topic: str) -> int:
@@ -465,6 +529,18 @@ async def clear_active_warnings(guild_id: int, user_id: int) -> int:
     return await REPO.pool.execute(
         "UPDATE moderation_warnings SET active=0 WHERE guild_id=? AND user_id=? AND active=1",
         (str(guild_id), str(user_id)),
+    )
+
+
+async def add_audit(guild_id: int, actor: discord.Member, action_type: str, target_id: int = 0, metadata: dict | None = None):
+    await REPO.add_audit_event(
+        guild_id=str(guild_id),
+        actor_id=str(actor.id),
+        actor_name=str(actor),
+        action_type=str(action_type),
+        target_id=str(target_id or ""),
+        metadata=metadata or {},
+        created_at=int(time.time()),
     )
 
 
@@ -1018,6 +1094,8 @@ async def on_interaction(interaction: discord.Interaction):
         return
 
     if custom_id == "ticket:open":
+        if not await enforce_command_rate_limit(interaction, "ticket_open_button"):
+            return
         if not command_enabled_for_guild(interaction.guild.id, "command_ticket_open", default=True):
             if not interaction.response.is_done():
                 await interaction.response.send_message("Ticket button is disabled on this server.", ephemeral=True)
@@ -1038,6 +1116,13 @@ async def on_interaction(interaction: discord.Interaction):
         if not interaction.response.is_done():
             await interaction.response.send_message(f"Ticket opened: {channel.mention}", ephemeral=True)
         await METRICS.track(str(interaction.guild.id), "ticket_open", {"user_id": interaction.user.id, "channel_id": channel.id})
+        await add_audit(
+            interaction.guild.id,
+            interaction.user,
+            "ticket_open",
+            target_id=channel.id,
+            metadata={"source": "button"},
+        )
         REALTIME_BUS.publish(str(interaction.guild.id), {"type": "ticket_open", "user_id": interaction.user.id, "channel_id": channel.id})
         return
 
@@ -1048,6 +1133,8 @@ async def on_interaction(interaction: discord.Interaction):
     if not command_enabled_for_guild(interaction.guild.id, "command_ticket_close", default=True):
         if not interaction.response.is_done():
             await interaction.response.send_message("Ticket close button is disabled on this server.", ephemeral=True)
+        return
+    if not await enforce_command_rate_limit(interaction, "ticket_close_button"):
         return
 
     if not _can_close_ticket(interaction.user, interaction.guild):
@@ -1062,6 +1149,13 @@ async def on_interaction(interaction: discord.Interaction):
         str(interaction.guild.id),
         "ticket_close",
         {"user_id": interaction.user.id, "channel_id": ch.id, "ticket_owner_id": owner_id or 0},
+    )
+    await add_audit(
+        interaction.guild.id,
+        interaction.user,
+        "ticket_close",
+        target_id=ch.id,
+        metadata={"source": "button", "ticket_owner_id": int(owner_id or 0)},
     )
     REALTIME_BUS.publish(str(interaction.guild.id), {"type": "ticket_close", "user_id": interaction.user.id, "channel_id": ch.id})
     await asyncio.sleep(3)
@@ -1081,6 +1175,8 @@ async def warn(interaction: discord.Interaction, member: discord.Member, reason:
     if not has_moderation_access(interaction, cfg):
         await interaction.response.send_message("Missing moderation access.", ephemeral=True)
         return
+    if not await enforce_command_rate_limit(interaction, "warn"):
+        return
     err = moderation_target_error(interaction.user, member)
     if err:
         await interaction.response.send_message(err, ephemeral=True)
@@ -1089,6 +1185,13 @@ async def warn(interaction: discord.Interaction, member: discord.Member, reason:
     await add_warning(interaction.guild.id, member.id, interaction.user.id, reason)
     count = await count_active_warnings(interaction.guild.id, member.id)
     await interaction.response.send_message(f"Warned {member.mention}. Active warnings: {count}", ephemeral=False)
+    await add_audit(
+        interaction.guild.id,
+        interaction.user,
+        "moderation_warn",
+        target_id=member.id,
+        metadata={"reason": str(reason)[:300], "active_warnings": int(count)},
+    )
     await METRICS.track(str(interaction.guild.id), "warn", {"user_id": member.id, "moderator_id": interaction.user.id})
     REALTIME_BUS.publish(str(interaction.guild.id), {"type": "warn", "user_id": member.id, "moderator_id": interaction.user.id})
 
@@ -1099,6 +1202,13 @@ async def warn(interaction: discord.Interaction, member: discord.Member, reason:
         try:
             await member.kick(reason=f"Warn threshold reached ({count})")
             await interaction.followup.send(f"Auto action: kicked {member.mention} (threshold reached).", ephemeral=True)
+            await add_audit(
+                interaction.guild.id,
+                interaction.user,
+                "moderation_auto_kick",
+                target_id=member.id,
+                metadata={"warn_count": int(count)},
+            )
         except Exception:
             LOGGER.warning("moderation_auto_kick_failed guild_id=%s user_id=%s", interaction.guild.id, member.id, exc_info=True)
     else:
@@ -1107,6 +1217,13 @@ async def warn(interaction: discord.Interaction, member: discord.Member, reason:
             until = discord.utils.utcnow() + timedelta(minutes=minutes)
             await member.timeout(until, reason=f"Warn threshold reached ({count})")
             await interaction.followup.send(f"Auto action: timeout {member.mention} for {minutes} minutes.", ephemeral=True)
+            await add_audit(
+                interaction.guild.id,
+                interaction.user,
+                "moderation_auto_timeout",
+                target_id=member.id,
+                metadata={"warn_count": int(count), "minutes": int(minutes)},
+            )
         except Exception:
             LOGGER.warning("moderation_auto_timeout_failed guild_id=%s user_id=%s", interaction.guild.id, member.id, exc_info=True)
 
@@ -1123,6 +1240,8 @@ async def warnings(interaction: discord.Interaction, member: discord.Member):
         return
     if not has_moderation_access(interaction, cfg):
         await interaction.response.send_message("Missing moderation access.", ephemeral=True)
+        return
+    if not await enforce_command_rate_limit(interaction, "warnings"):
         return
     count = await count_active_warnings(interaction.guild.id, member.id)
     await interaction.response.send_message(f"{member.mention} has {count} active warnings.", ephemeral=True)
@@ -1141,8 +1260,17 @@ async def clearwarnings(interaction: discord.Interaction, member: discord.Member
     if not has_moderation_access(interaction, cfg):
         await interaction.response.send_message("Missing moderation access.", ephemeral=True)
         return
+    if not await enforce_command_rate_limit(interaction, "clearwarnings"):
+        return
     updated = await clear_active_warnings(interaction.guild.id, member.id)
     await interaction.response.send_message(f"Cleared {updated} warnings for {member.mention}.", ephemeral=True)
+    await add_audit(
+        interaction.guild.id,
+        interaction.user,
+        "moderation_clearwarnings",
+        target_id=member.id,
+        metadata={"cleared_count": int(updated)},
+    )
 
 
 @tree.command(name="timeout", description="Timeout a member for a number of minutes")
@@ -1158,6 +1286,8 @@ async def timeout(interaction: discord.Interaction, member: discord.Member, minu
     if not has_moderation_access(interaction, cfg):
         await interaction.response.send_message("Missing moderation access.", ephemeral=True)
         return
+    if not await enforce_command_rate_limit(interaction, "timeout"):
+        return
     err = moderation_target_error(interaction.user, member)
     if err:
         await interaction.response.send_message(err, ephemeral=True)
@@ -1166,6 +1296,13 @@ async def timeout(interaction: discord.Interaction, member: discord.Member, minu
     until = discord.utils.utcnow() + timedelta(minutes=minutes)
     await member.timeout(until, reason=reason[:500])
     await interaction.response.send_message(f"Timed out {member.mention} for {minutes} minutes.", ephemeral=False)
+    await add_audit(
+        interaction.guild.id,
+        interaction.user,
+        "moderation_timeout",
+        target_id=member.id,
+        metadata={"minutes": int(minutes), "reason": str(reason)[:300]},
+    )
     await METRICS.track(str(interaction.guild.id), "timeout", {"user_id": member.id, "moderator_id": interaction.user.id})
 
 
@@ -1182,12 +1319,21 @@ async def kick(interaction: discord.Interaction, member: discord.Member, reason:
     if not has_moderation_access(interaction, cfg):
         await interaction.response.send_message("Missing moderation access.", ephemeral=True)
         return
+    if not await enforce_command_rate_limit(interaction, "kick"):
+        return
     err = moderation_target_error(interaction.user, member)
     if err:
         await interaction.response.send_message(err, ephemeral=True)
         return
     await member.kick(reason=reason[:500])
     await interaction.response.send_message(f"Kicked {member.mention}.", ephemeral=False)
+    await add_audit(
+        interaction.guild.id,
+        interaction.user,
+        "moderation_kick",
+        target_id=member.id,
+        metadata={"reason": str(reason)[:300]},
+    )
     await METRICS.track(str(interaction.guild.id), "kick", {"user_id": member.id, "moderator_id": interaction.user.id})
 
 
@@ -1204,6 +1350,8 @@ async def ban(interaction: discord.Interaction, member: discord.Member, reason: 
     if not has_moderation_access(interaction, cfg):
         await interaction.response.send_message("Missing moderation access.", ephemeral=True)
         return
+    if not await enforce_command_rate_limit(interaction, "ban"):
+        return
     err = moderation_target_error(interaction.user, member)
     if err:
         await interaction.response.send_message(err, ephemeral=True)
@@ -1211,6 +1359,13 @@ async def ban(interaction: discord.Interaction, member: discord.Member, reason: 
     delete_days = max(0, min(7, int(delete_days)))
     await member.ban(reason=reason[:500], delete_message_days=delete_days)
     await interaction.response.send_message(f"Banned {member.mention}.", ephemeral=False)
+    await add_audit(
+        interaction.guild.id,
+        interaction.user,
+        "moderation_ban",
+        target_id=member.id,
+        metadata={"reason": str(reason)[:300], "delete_days": int(delete_days)},
+    )
     await METRICS.track(str(interaction.guild.id), "ban", {"user_id": member.id, "moderator_id": interaction.user.id})
 
 
@@ -1225,6 +1380,8 @@ async def reloadconfig(interaction: discord.Interaction):
             return
         if not interaction.user.guild_permissions.manage_guild:
             await interaction.response.send_message("Missing MANAGE_GUILD permission.", ephemeral=True)
+            return
+        if not await enforce_command_rate_limit(interaction, "reloadconfig"):
             return
 
         _ = CONFIG_ENGINE.get_all()
@@ -1252,6 +1409,8 @@ async def modules_health(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.manage_guild:
         await interaction.response.send_message("Missing MANAGE_GUILD permission.", ephemeral=True)
         return
+    if not await enforce_command_rate_limit(interaction, "modules_health"):
+        return
 
     health = REGISTRY.health()
     lines = [f"{k}: {'ok' if v['healthy'] else 'error'} ({v['version']})" for k, v in health.items()]
@@ -1270,6 +1429,8 @@ async def ticket_open(interaction: discord.Interaction, reason: str = "No reason
     if not command_enabled_for_guild(interaction.guild.id, "command_ticket_open", default=True):
         await interaction.response.send_message("This command is disabled on this server.", ephemeral=True)
         return
+    if not await enforce_command_rate_limit(interaction, "ticket_open"):
+        return
 
     channel, status = await _open_ticket_for_member(interaction.guild, interaction.user, reason)
     if status == "missing_permissions":
@@ -1283,6 +1444,13 @@ async def ticket_open(interaction: discord.Interaction, reason: str = "No reason
         return
     await interaction.response.send_message(f"Ticket opened: {channel.mention}", ephemeral=True)
     await METRICS.track(str(interaction.guild.id), "ticket_open", {"user_id": interaction.user.id, "channel_id": channel.id})
+    await add_audit(
+        interaction.guild.id,
+        interaction.user,
+        "ticket_open",
+        target_id=channel.id,
+        metadata={"source": "slash", "reason": str(reason)[:300]},
+    )
     REALTIME_BUS.publish(str(interaction.guild.id), {"type": "ticket_open", "user_id": interaction.user.id, "channel_id": channel.id})
 
 
@@ -1294,6 +1462,8 @@ async def ticket_close(interaction: discord.Interaction, reason: str = "Resolved
         return
     if not command_enabled_for_guild(interaction.guild.id, "command_ticket_close", default=True):
         await interaction.response.send_message("This command is disabled on this server.", ephemeral=True)
+        return
+    if not await enforce_command_rate_limit(interaction, "ticket_close"):
         return
     if not isinstance(interaction.channel, discord.TextChannel) or not interaction.channel.name.startswith("ticket-"):
         await interaction.response.send_message("Run this in a ticket channel.", ephemeral=True)
@@ -1310,6 +1480,13 @@ async def ticket_close(interaction: discord.Interaction, reason: str = "Resolved
         str(interaction.guild.id),
         "ticket_close",
         {"user_id": interaction.user.id, "channel_id": ch.id, "ticket_owner_id": owner_id or 0},
+    )
+    await add_audit(
+        interaction.guild.id,
+        interaction.user,
+        "ticket_close",
+        target_id=ch.id,
+        metadata={"source": "slash", "reason": str(reason)[:300], "ticket_owner_id": int(owner_id or 0)},
     )
     REALTIME_BUS.publish(str(interaction.guild.id), {"type": "ticket_close", "user_id": interaction.user.id, "channel_id": ch.id})
     await asyncio.sleep(3)
@@ -1328,6 +1505,8 @@ async def ticket_add(interaction: discord.Interaction, member: discord.Member):
     if not isinstance(interaction.channel, discord.TextChannel) or not interaction.channel.name.startswith("ticket-"):
         await interaction.response.send_message("Run this in a ticket channel.", ephemeral=True)
         return
+    if not await enforce_command_rate_limit(interaction, "ticket_add"):
+        return
     cfg = moderation_cfg(interaction.guild.id)
     if not (has_moderation_access(interaction, cfg) or interaction.user.guild_permissions.manage_channels):
         await interaction.response.send_message("Missing moderation access.", ephemeral=True)
@@ -1342,6 +1521,13 @@ async def ticket_add(interaction: discord.Interaction, member: discord.Member):
         reason=f"ticket add by {interaction.user}",
     )
     await interaction.response.send_message(f"Added {member.mention} to this ticket.", ephemeral=False)
+    await add_audit(
+        interaction.guild.id,
+        interaction.user,
+        "ticket_member_add",
+        target_id=member.id,
+        metadata={"channel_id": int(interaction.channel.id)},
+    )
     await _send_ticket_log(
         interaction.guild,
         title="Ticket Member Added",
@@ -1362,12 +1548,21 @@ async def ticket_remove(interaction: discord.Interaction, member: discord.Member
     if not isinstance(interaction.channel, discord.TextChannel) or not interaction.channel.name.startswith("ticket-"):
         await interaction.response.send_message("Run this in a ticket channel.", ephemeral=True)
         return
+    if not await enforce_command_rate_limit(interaction, "ticket_remove"):
+        return
     cfg = moderation_cfg(interaction.guild.id)
     if not (has_moderation_access(interaction, cfg) or interaction.user.guild_permissions.manage_channels):
         await interaction.response.send_message("Missing moderation access.", ephemeral=True)
         return
     await interaction.channel.set_permissions(member, overwrite=None, reason=f"ticket remove by {interaction.user}")
     await interaction.response.send_message(f"Removed {member.mention} from this ticket.", ephemeral=False)
+    await add_audit(
+        interaction.guild.id,
+        interaction.user,
+        "ticket_member_remove",
+        target_id=member.id,
+        metadata={"channel_id": int(interaction.channel.id)},
+    )
     await _send_ticket_log(
         interaction.guild,
         title="Ticket Member Removed",
@@ -1380,12 +1575,29 @@ tree.add_command(ticket_group)
 
 
 def main():
+    global DASHBOARD_THREAD
     CONFIG_ENGINE.on_reload = _on_config_reload
     _validate_startup_dependencies()
     set_module_health_provider(REGISTRY.health)
     set_scheduler_provider(SCHEDULER)
-    threading.Thread(target=run_dashboard, daemon=True).start()
+    DASHBOARD_THREAD = threading.Thread(target=run_dashboard, daemon=True)
+    DASHBOARD_THREAD.start()
     start_ws_server("127.0.0.1", 8765, REALTIME_BUS, WS_AUTH)
+
+    def _handle_shutdown(signum, _frame):
+        LOGGER.warning("shutdown_signal_received signum=%s", signum)
+        try:
+            SCHEDULER.stop()
+        except Exception:
+            LOGGER.warning("scheduler_stop_failed", exc_info=True)
+        try:
+            if bot.is_ready():
+                asyncio.run_coroutine_threadsafe(bot.close(), bot.loop)
+        except Exception:
+            LOGGER.warning("bot_shutdown_failed", exc_info=True)
+
+    signal.signal(signal.SIGTERM, _handle_shutdown)
+    signal.signal(signal.SIGINT, _handle_shutdown)
     bot.run(TOKEN, log_handler=None)
 
 

@@ -3,6 +3,7 @@ import json
 import queue
 import sqlite3
 import threading
+import time
 from pathlib import Path
 
 
@@ -16,6 +17,8 @@ class SQLitePool:
         for _ in range(self.size):
             conn = sqlite3.connect(self.db_path, check_same_thread=False)
             conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA foreign_keys=ON")
+            conn.execute("PRAGMA journal_mode=WAL")
             self._pool.put(conn)
 
     def init_schema(self):
@@ -64,6 +67,23 @@ class SQLitePool:
                 )
                 cur.execute(
                     "CREATE INDEX IF NOT EXISTS idx_warnings_guild_user_active ON moderation_warnings (guild_id, user_id, active)"
+                )
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS audit_events (
+                      id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      guild_id TEXT NOT NULL,
+                      actor_id TEXT NOT NULL,
+                      actor_name TEXT NOT NULL,
+                      action_type TEXT NOT NULL,
+                      target_id TEXT NOT NULL DEFAULT '',
+                      metadata TEXT NOT NULL DEFAULT '{}',
+                      created_at INTEGER NOT NULL
+                    )
+                    """
+                )
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_audit_events_guild_time ON audit_events (guild_id, created_at DESC)"
                 )
                 conn.commit()
                 self._initialized = True
@@ -142,3 +162,29 @@ class Repository:
             (guild_id, from_ts),
         )
         return {r["event_type"]: r["c"] for r in rows}
+
+    async def add_audit_event(
+        self,
+        guild_id: str,
+        actor_id: str,
+        actor_name: str,
+        action_type: str,
+        target_id: str = "",
+        metadata: dict | None = None,
+        created_at: int = 0,
+    ):
+        await self.pool.execute(
+            """
+            INSERT INTO audit_events (guild_id, actor_id, actor_name, action_type, target_id, metadata, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(guild_id),
+                str(actor_id),
+                str(actor_name)[:120],
+                str(action_type)[:120],
+                str(target_id)[:120],
+                json.dumps(metadata or {}, ensure_ascii=False),
+                int(created_at or time.time()),
+            ),
+        )

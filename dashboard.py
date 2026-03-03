@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import threading
 import time
 from collections import deque
@@ -46,6 +47,13 @@ SUPPORT_ADMIN_IDS = {
 }
 SUPPORT_ALERT_WEBHOOK_URL = os.getenv("SUPPORT_ALERT_WEBHOOK_URL", "").strip()
 VERIFY_BASE_URL = os.getenv("VERIFY_BASE_URL", "https://stupid.linkpc.net").strip().rstrip("/")
+MAX_JSON_BODY_BYTES = max(1024, min(2 * 1024 * 1024, int(os.getenv("MAX_JSON_BODY_BYTES", "262144"))))
+ALLOWED_ORIGINS = {
+    x.strip().lower().rstrip("/")
+    for x in str(os.getenv("ALLOWED_ORIGINS", "") or "").split(",")
+    if x.strip()
+}
+SAFE_TEXT_RE = re.compile(r"^[\w\s\-\.,:;!?@#&()/+*'\"<>=%]*$")
 
 MANAGE_GUILD = 1 << 5
 GUILDS_REFRESH_TTL_SEC = max(5, int(os.getenv("GUILDS_REFRESH_TTL_SEC", "45") or "45"))
@@ -212,7 +220,8 @@ def _ensure_support_schema():
               author_role TEXT NOT NULL,
               body TEXT NOT NULL,
               visibility TEXT NOT NULL DEFAULT 'public',
-              created_at INTEGER NOT NULL
+              created_at INTEGER NOT NULL,
+              FOREIGN KEY(case_id) REFERENCES support_cases(id) ON DELETE CASCADE
             )
             """
         )
@@ -541,6 +550,53 @@ def listv(data, key):
     return []
 
 
+def _allowed_origin(origin: str) -> bool:
+    if not origin:
+        return True
+    o = str(origin).strip().lower().rstrip("/")
+    if not ALLOWED_ORIGINS:
+        return True
+    return o in ALLOWED_ORIGINS
+
+
+def _safe_text(value: str, max_len: int, pattern: re.Pattern[str] | None = None) -> str:
+    txt = sanitize_text(value, max_len)
+    if not txt:
+        return ""
+    if pattern is None:
+        pattern = SAFE_TEXT_RE
+    if not pattern.fullmatch(txt):
+        return ""
+    return txt
+
+
+def _json_body_or_error(max_keys: int = 120):
+    if request.content_length and int(request.content_length) > MAX_JSON_BODY_BYTES:
+        return None, (jsonify({"ok": False, "error": "payload_too_large"}), 413)
+    if request.mimetype != "application/json":
+        return None, (jsonify({"ok": False, "error": "invalid_content_type"}), 415)
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return None, (jsonify({"ok": False, "error": "invalid_json"}), 400)
+    if len(data) > max_keys:
+        return None, (jsonify({"ok": False, "error": "too_many_fields"}), 400)
+    return data, None
+
+
+def _audit_log(guild_id: str, action_type: str, actor_id: str, actor_name: str, target_id: str = "", metadata: dict | None = None):
+    run_async(
+        REPO.add_audit_event(
+            guild_id=str(guild_id),
+            actor_id=str(actor_id),
+            actor_name=str(actor_name),
+            action_type=str(action_type),
+            target_id=str(target_id),
+            metadata=metadata or {},
+            created_at=int(time.time()),
+        )
+    )
+
+
 def get_oauth_url():
     state = os.urandom(24).hex()
     session["oauth_state"] = state
@@ -597,6 +653,7 @@ def create_app():
         raise RuntimeError("SECRET_KEY missing")
 
     app.secret_key = SECRET_KEY
+    app.config["MAX_CONTENT_LENGTH"] = MAX_JSON_BODY_BYTES
     app.config["SESSION_COOKIE_HTTPONLY"] = True
     app.config["SESSION_COOKIE_SECURE"] = True
     app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
@@ -607,6 +664,25 @@ def create_app():
         sid = session.get("user", {}).get("id", "anon")
         if not RATE_LIMITER.allow(ip, sid, request.path):
             return jsonify({"ok": False, "error": "rate_limited"}), 429
+        if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+            if not _allowed_origin(request.headers.get("Origin", "")):
+                return jsonify({"ok": False, "error": "forbidden_origin"}), 403
+
+    @app.after_request
+    def security_headers(resp):
+        resp.headers["X-Frame-Options"] = "DENY"
+        resp.headers["X-Content-Type-Options"] = "nosniff"
+        resp.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        resp.headers["Permissions-Policy"] = "geolocation=(), camera=(), microphone=()"
+        resp.headers["Content-Security-Policy"] = "default-src 'self' https:; script-src 'self' 'unsafe-inline' https:; style-src 'self' 'unsafe-inline' https:; frame-ancestors 'none'; object-src 'none'"
+        return resp
+
+    @app.errorhandler(Exception)
+    def unhandled_error(exc):
+        LOGGER.error("dashboard_unhandled_exception path=%s method=%s", request.path, request.method, exc_info=exc)
+        if request.path.startswith("/dashboard/api/") or request.path.startswith("/api/"):
+            return jsonify({"ok": False, "error": "internal_error"}), 500
+        return "Internal server error", 500
 
     @app.context_processor
     def inject_globals():
@@ -1397,7 +1473,9 @@ def create_app():
     def dashboard_support_create_case():
         if not logged_in():
             return jsonify({"ok": False, "error": "unauthorized"}), 401
-        data = request.get_json(silent=True) or {}
+        data, err = _json_body_or_error(max_keys=20)
+        if err:
+            return err
         token = request.headers.get("X-CSRF-Token", "") or str(data.get("csrf_token", ""))
         if not validate_csrf(session, token):
             new_token = issue_csrf(session)
@@ -1405,8 +1483,8 @@ def create_app():
         guild_id = sanitize_id(data.get("guild_id", ""))
         if not guild_id or not can_access_support_portal(guild_id):
             return jsonify({"ok": False, "error": "forbidden"}), 403
-        subject = sanitize_text(data.get("subject", ""), 140)
-        body = sanitize_text(data.get("message", ""), 3000)
+        subject = _safe_text(data.get("subject", ""), 140)
+        body = _safe_text(data.get("message", ""), 3000)
         priority = sanitize_text(data.get("priority", "normal"), 24).lower()
         if priority not in {"low", "normal", "high", "urgent"}:
             priority = "normal"
@@ -1440,6 +1518,7 @@ def create_app():
             case_row = _db_fetchone_sync("SELECT * FROM support_cases WHERE id=?", (int(case_id),))
             if case_row:
                 _support_send_webhook("Urgent case created", case_row, "Immediate support attention required.")
+        _audit_log(guild_id, "support_case_created", uid, uname, target_id=str(case_id), metadata={"priority": priority})
         return jsonify({"ok": True, "case_id": int(case_id)})
 
     @app.get("/dashboard/api/support/cases/<case_id>/messages")
@@ -1453,17 +1532,28 @@ def create_app():
             return jsonify({"error": "forbidden"}), 403
         gid = str(case_row.get("guild_id", ""))
         privileged = bool(can_edit_guild(gid) or is_support_or_owner())
-        visibility_where = "" if privileged else " AND visibility='public'"
-        msgs = _db_fetchall_sync(
-            f"""
-            SELECT id, case_id, guild_id, author_id, author_name, author_role, body, visibility, created_at
-            FROM support_messages
-            WHERE case_id=? {visibility_where}
-            ORDER BY created_at ASC, id ASC
-            LIMIT 500
-            """,
-            (int(case_id),),
-        )
+        if privileged:
+            msgs = _db_fetchall_sync(
+                """
+                SELECT id, case_id, guild_id, author_id, author_name, author_role, body, visibility, created_at
+                FROM support_messages
+                WHERE case_id=?
+                ORDER BY created_at ASC, id ASC
+                LIMIT 500
+                """,
+                (int(case_id),),
+            )
+        else:
+            msgs = _db_fetchall_sync(
+                """
+                SELECT id, case_id, guild_id, author_id, author_name, author_role, body, visibility, created_at
+                FROM support_messages
+                WHERE case_id=? AND visibility='public'
+                ORDER BY created_at ASC, id ASC
+                LIMIT 500
+                """,
+                (int(case_id),),
+            )
         return jsonify({"case": case_row, "messages": msgs})
 
     @app.post("/dashboard/api/support/cases/<case_id>/messages")
@@ -1475,12 +1565,14 @@ def create_app():
             return jsonify({"ok": False, "error": "not_found"}), 404
         if not _can_access_case(case_row):
             return jsonify({"ok": False, "error": "forbidden"}), 403
-        data = request.get_json(silent=True) or {}
+        data, err = _json_body_or_error(max_keys=20)
+        if err:
+            return err
         token = request.headers.get("X-CSRF-Token", "") or str(data.get("csrf_token", ""))
         if not validate_csrf(session, token):
             new_token = issue_csrf(session)
             return jsonify({"ok": False, "error": "csrf_failed", "csrf_token": new_token}), 403
-        body = sanitize_text(data.get("message", ""), 3000)
+        body = _safe_text(data.get("message", ""), 3000)
         if not body:
             return jsonify({"ok": False, "error": "message_required"}), 400
         uid, uname = current_user_meta()
@@ -1536,6 +1628,7 @@ def create_app():
         payload = {"type": "support_case_update", "event": "message", "case_id": int(case_id), "guild_id": gid, "ts": now}
         REALTIME_BUS.publish(gid, payload)
         REALTIME_BUS.publish("support:global", payload)
+        _audit_log(gid, "support_case_message_added", uid, uname, target_id=str(case_id), metadata={"visibility": visibility})
         _support_maybe_send_sla_alert(int(case_id))
         return jsonify({"ok": True})
 
@@ -1548,7 +1641,9 @@ def create_app():
         case_row = _get_case_or_none(case_id)
         if case_row is None:
             return jsonify({"ok": False, "error": "not_found"}), 404
-        data = request.get_json(silent=True) or {}
+        data, err = _json_body_or_error(max_keys=10)
+        if err:
+            return err
         token = request.headers.get("X-CSRF-Token", "") or str(data.get("csrf_token", ""))
         if not validate_csrf(session, token):
             new_token = issue_csrf(session)
@@ -1570,6 +1665,7 @@ def create_app():
         payload = {"type": "support_case_update", "event": "assignment", "case_id": int(case_id), "guild_id": gid, "ts": now}
         REALTIME_BUS.publish(gid, payload)
         REALTIME_BUS.publish("support:global", payload)
+        _audit_log(gid, "support_case_assignment", uid, uname, target_id=str(case_id), metadata={"action": action})
         _support_maybe_send_sla_alert(int(case_id))
         return jsonify({"ok": True})
 
@@ -1582,7 +1678,9 @@ def create_app():
             return jsonify({"ok": False, "error": "not_found"}), 404
         if not _can_access_case(case_row):
             return jsonify({"ok": False, "error": "forbidden"}), 403
-        data = request.get_json(silent=True) or {}
+        data, err = _json_body_or_error(max_keys=10)
+        if err:
+            return err
         token = request.headers.get("X-CSRF-Token", "") or str(data.get("csrf_token", ""))
         if not validate_csrf(session, token):
             new_token = issue_csrf(session)
@@ -1603,6 +1701,7 @@ def create_app():
         payload = {"type": "support_case_update", "event": "status", "case_id": int(case_id), "guild_id": gid, "ts": now}
         REALTIME_BUS.publish(gid, payload)
         REALTIME_BUS.publish("support:global", payload)
+        _audit_log(gid, "support_case_status_changed", uid, str(session.get("user", {}).get("username", "user")), target_id=str(case_id), metadata={"status": status})
         _support_maybe_send_sla_alert(int(case_id))
         return jsonify({"ok": True})
 
@@ -1791,7 +1890,9 @@ def create_app():
     def api_verify_apply_lock():
         if not logged_in():
             return jsonify({"ok": False, "error": "unauthorized"}), 401
-        data = request.get_json(silent=True) or {}
+        data, err = _json_body_or_error(max_keys=40)
+        if err:
+            return err
         guild_id = sanitize_id(data.get("guild_id", ""))
         if not guild_id or not can_edit_guild(guild_id):
             return jsonify({"ok": False, "error": "forbidden"}), 403
@@ -1828,6 +1929,8 @@ def create_app():
             ok, out = run_on_bot_loop(_apply_verify_channel_lock(guild_id), timeout_sec=90)
             if not ok:
                 return jsonify({"ok": False, **out}), 400
+            uid, uname = current_user_meta()
+            _audit_log(guild_id, "verify_lock_applied", uid, uname, metadata={"mode": str(data.get("lock_mode", ""))[:32]})
             return jsonify({"ok": True, **out})
         except Exception:
             LOGGER.warning("verify_lock_apply_failed guild_id=%s", guild_id, exc_info=True)
@@ -1838,7 +1941,9 @@ def create_app():
     def api_verify_restore_lock():
         if not logged_in():
             return jsonify({"ok": False, "error": "unauthorized"}), 401
-        data = request.get_json(silent=True) or {}
+        data, err = _json_body_or_error(max_keys=12)
+        if err:
+            return err
         guild_id = sanitize_id(data.get("guild_id", ""))
         if not guild_id or not can_edit_guild(guild_id):
             return jsonify({"ok": False, "error": "forbidden"}), 403
@@ -1850,6 +1955,8 @@ def create_app():
             ok, out = run_on_bot_loop(_restore_verify_channel_lock(guild_id), timeout_sec=90)
             if not ok:
                 return jsonify({"ok": False, **out}), 400
+            uid, uname = current_user_meta()
+            _audit_log(guild_id, "verify_lock_restored", uid, uname)
             return jsonify({"ok": True, **out})
         except Exception:
             LOGGER.warning("verify_lock_restore_failed guild_id=%s", guild_id, exc_info=True)
@@ -1861,13 +1968,13 @@ def create_app():
             return jsonify({"ok": False, "error": "unauthorized"}), 401
         if not can_edit_guild(guild_id):
             return jsonify({"ok": False, "error": "forbidden"}), 403
-
-        token = request.headers.get("X-CSRF-Token", "") or str((request.get_json(silent=True) or {}).get("csrf_token", ""))
+        data, err = _json_body_or_error(max_keys=300)
+        if err:
+            return err
+        token = request.headers.get("X-CSRF-Token", "") or str(data.get("csrf_token", ""))
         if not validate_csrf(session, token):
             new_token = issue_csrf(session)
             return jsonify({"ok": False, "error": "csrf_failed", "csrf_token": new_token}), 403
-
-        data = request.get_json(silent=True) or {}
 
         if module_name == "welcome":
             payload = {
@@ -2213,6 +2320,8 @@ def create_app():
 
         CONFIG_ENGINE.save_module(str(guild_id), module_name, payload)
         REALTIME_BUS.publish(str(guild_id), {"type": "module_saved", "module": module_name, "ts": int(time.time())})
+        uid, uname = current_user_meta()
+        _audit_log(str(guild_id), "dashboard_module_saved", uid, uname, metadata={"module": str(module_name)})
         run_async(METRICS.track(str(guild_id), f"module_save:{module_name}", {"module": module_name}))
         return jsonify({"ok": True})
 

@@ -102,6 +102,13 @@ class ConfigEngineV3:
         self._conn.commit()
         return "payload"
 
+    def _payload_column_sql(self) -> str:
+        if self._payload_col == "payload":
+            return "payload"
+        if self._payload_col == "data":
+            return "data"
+        raise RuntimeError("invalid_payload_column")
+
     def _ensure_file(self):
         # Keep config.json present for compatibility/debugging, but no .bak rotation.
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -216,7 +223,7 @@ class ConfigEngineV3:
 
         now = int(time.time())
         cur = self._conn.cursor()
-        col = self._payload_col
+        col = self._payload_column_sql()
         for gid, payload in upgraded.items():
             cur.execute(
                 f"INSERT OR REPLACE INTO guild_configs (guild_id, {col}, updated_at) VALUES (?, ?, ?)",
@@ -228,7 +235,7 @@ class ConfigEngineV3:
     def _load(self, force=False):
         with self.lock:
             cur = self._conn.cursor()
-            col = self._payload_col
+            col = self._payload_column_sql()
             cur.execute(f"SELECT guild_id, {col} AS payload FROM guild_configs")
             rows = cur.fetchall()
             upgraded = {}
@@ -262,7 +269,7 @@ class ConfigEngineV3:
         now = int(time.time())
         cur = self._conn.cursor()
         cur.execute("DELETE FROM guild_configs")
-        col = self._payload_col
+        col = self._payload_column_sql()
         for gid, payload in self._data.items():
             cur.execute(
                 f"INSERT OR REPLACE INTO guild_configs (guild_id, {col}, updated_at) VALUES (?, ?, ?)",
@@ -272,7 +279,7 @@ class ConfigEngineV3:
 
     def _persist_guild_locked(self, gid: str, payload: dict):
         cur = self._conn.cursor()
-        col = self._payload_col
+        col = self._payload_column_sql()
         cur.execute(
             f"INSERT OR REPLACE INTO guild_configs (guild_id, {col}, updated_at) VALUES (?, ?, ?)",
             (str(gid), json.dumps(payload, ensure_ascii=False), int(time.time())),

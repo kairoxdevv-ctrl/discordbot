@@ -110,8 +110,12 @@ class DiscordWebhookHandler(logging.Handler):
                     sys.stderr.write(f"discord_webhook_log_drop queue_full dropped={self._dropped}\n")
                     sys.stderr.flush()
                     self._last_drop_report = now
-        except Exception:
-            pass
+        except Exception as exc:
+            try:
+                sys.stderr.write(f"discord_webhook_emit_failed error={type(exc).__name__}\n")
+                sys.stderr.flush()
+            except Exception:
+                return
 
     @staticmethod
     def _should_suppress(record: logging.LogRecord, message: str) -> bool:
