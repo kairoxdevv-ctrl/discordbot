@@ -17,3 +17,7 @@ config.json
 # OS / editor
 .DS_Store
 .vscode/
+
+# Autosync
+.git_autosync.pid
+logs/git_autosync.log
