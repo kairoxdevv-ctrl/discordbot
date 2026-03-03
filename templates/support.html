@@ -1,0 +1,39 @@
+{% extends 'base.html' %}
+{% set sidebar = false %}
+{% set title = 'Support Inbox' %}
+{% block content %}
+<div class="topbar">
+  <div>
+    <h1>Support Inbox</h1>
+    <p class="muted">{{ user.username }}</p>
+  </div>
+  <div class="grid2">
+    <a class="btn" href="/dashboard/servers">Servers</a>
+    <a class="btn danger" href="/dashboard/logout">Logout</a>
+  </div>
+</div>
+
+<div class="card" id="support-inbox-root">
+  <p class="muted">Live queue for all server support cases.</p>
+  <div class="grid2">
+    <select id="support-filter-status">
+      <option value="">All Status</option>
+      <option value="open">Open</option>
+      <option value="in_progress">In Progress</option>
+      <option value="resolved">Resolved</option>
+      <option value="closed">Closed</option>
+    </select>
+    <select id="support-filter-priority">
+      <option value="">All Priority</option>
+      <option value="urgent">Urgent</option>
+      <option value="high">High</option>
+      <option value="normal">Normal</option>
+      <option value="low">Low</option>
+    </select>
+  </div>
+  <label>
+    <input type="text" id="support-filter-q" placeholder="Search all cases">
+  </label>
+  <div id="support-inbox-list"></div>
+</div>
+{% endblock %}

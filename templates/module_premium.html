@@ -1,0 +1,20 @@
+<div class="card">
+  <h2>Premium</h2>
+  <p class="muted">Controls premium tier and optional limit overrides for this server.</p>
+  <form data-module-form data-module="premium" data-guild="{{ guild_id }}">
+    {% set m = cfg.modules.get('premium', {}) %}
+    <label class="inline"><input type="checkbox" name="enabled" {% if m.get('enabled') %}checked{% endif %}> Enabled</label>
+    <div class="grid2">
+      <label>Tier
+        <select name="tier">
+          {% set t = m.get('tier','free') %}
+          <option value="free" {% if t == 'free' %}selected{% endif %}>Free</option>
+          <option value="pro" {% if t == 'pro' %}selected{% endif %}>Pro</option>
+          <option value="enterprise" {% if t == 'enterprise' %}selected{% endif %}>Enterprise</option>
+        </select>
+      </label>
+      <label class="inline"><input type="checkbox" name="limits_override" {% if m.get('limits_override') %}checked{% endif %}> Limits Override</label>
+    </div>
+    <button class="btn" type="submit">Save Premium</button>
+  </form>
+</div>

@@ -1,0 +1,32 @@
+<div class="card">
+  <h2>Commands</h2>
+  <p class="muted">Central control for which commands are active on this server.</p>
+  <form data-module-form data-module="commands" data-guild="{{ guild_id }}">
+    {% set c = cfg.modules.get('commands', {}) %}
+    <label class="inline"><input type="checkbox" name="enabled" {% if c.get('enabled', true) %}checked{% endif %}> Enable Command System</label>
+    <div class="grid2">
+      <label class="inline"><input type="checkbox" name="custom_commands_enabled" {% if c.get('custom_commands_enabled', true) %}checked{% endif %}> Enable Custom Commands</label>
+      <label class="inline"><input type="checkbox" name="custom_response_ephemeral" {% if c.get('custom_response_ephemeral') %}checked{% endif %}> Custom Commands Ephemeral</label>
+      <label>Custom Commands Max
+        <input type="number" name="custom_commands_max" min="1" max="50" value="{{ c.get('custom_commands_max', 20) }}">
+      </label>
+    </div>
+    <h3>System Commands</h3>
+    <p class="hint">Controls admin commands for operations and troubleshooting.</p>
+    <div class="grid2">
+      <label class="inline"><input type="checkbox" name="command_reloadconfig" {% if c.get('command_reloadconfig', true) %}checked{% endif %}> /reloadconfig</label>
+      <label class="inline"><input type="checkbox" name="command_modules_health" {% if c.get('command_modules_health', true) %}checked{% endif %}> /modules_health</label>
+    </div>
+    <h3>Moderation Commands</h3>
+    <p class="hint">Enable only the moderation commands your staff should use.</p>
+    <div class="grid2">
+      <label class="inline"><input type="checkbox" name="command_warn" {% if c.get('command_warn', true) %}checked{% endif %}> /warn</label>
+      <label class="inline"><input type="checkbox" name="command_warnings" {% if c.get('command_warnings', true) %}checked{% endif %}> /warnings</label>
+      <label class="inline"><input type="checkbox" name="command_clearwarnings" {% if c.get('command_clearwarnings', true) %}checked{% endif %}> /clearwarnings</label>
+      <label class="inline"><input type="checkbox" name="command_timeout" {% if c.get('command_timeout', true) %}checked{% endif %}> /timeout</label>
+      <label class="inline"><input type="checkbox" name="command_kick" {% if c.get('command_kick') %}checked{% endif %}> /kick</label>
+      <label class="inline"><input type="checkbox" name="command_ban" {% if c.get('command_ban') %}checked{% endif %}> /ban</label>
+    </div>
+    <button class="btn" type="submit">Save Commands</button>
+  </form>
+</div>

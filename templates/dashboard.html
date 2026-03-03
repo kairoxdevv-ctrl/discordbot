@@ -1,0 +1,161 @@
+{% extends 'base.html' %}
+{% set sidebar = true %}
+{% set title = 'Dashboard' %}
+{% block content %}
+<div class="topbar">
+  <div>
+    <h1>Guild {{ guild_id }}</h1>
+    <p class="muted">Production management panel</p>
+  </div>
+  <a class="btn" href="/dashboard/servers">Switch Server</a>
+</div>
+
+<section class="section active" data-section="overview">
+  <div class="card">
+    <h2>Overview</h2>
+    {% include 'module_stats.html' %}
+  </div>
+  <div class="card" id="support-diagnostics" data-guild="{{ guild_id }}">
+    <h2>Support Diagnostics</h2>
+    <p class="muted" id="diag-summary">Checking server state...</p>
+    <pre class="diag-json" id="diag-details">Loading...</pre>
+    <button class="btn" type="button" id="diag-refresh">Refresh Diagnostics</button>
+  </div>
+</section>
+
+<section class="section" data-section="support_center">
+  <div class="card">
+    <h2>Support Center</h2>
+    <p class="muted">Open cases, collaborate with support admin, and track status live.</p>
+    <form id="support-create-form" data-guild="{{ guild_id }}">
+      <div class="grid2">
+        <label>Subject
+          <input type="text" name="subject" maxlength="140" placeholder="Short issue summary">
+        </label>
+        <label>Priority
+          <select name="priority">
+            <option value="normal">Normal</option>
+            <option value="low">Low</option>
+            <option value="high">High</option>
+            <option value="urgent">Urgent</option>
+          </select>
+        </label>
+      </div>
+      <label>Message
+        <textarea name="message" rows="4" maxlength="3000" placeholder="Explain what is broken and what you already tried."></textarea>
+      </label>
+      <button class="btn" type="submit">Create Support Case</button>
+    </form>
+  </div>
+  <div class="card support-grid" id="support-center" data-guild="{{ guild_id }}" data-support-privileged="{{ '1' if support_privileged else '0' }}">
+    <div>
+      <h3>Cases</h3>
+      <div class="grid2">
+        <select id="support-filter-status">
+          <option value="">All Status</option>
+          <option value="open">Open</option>
+          <option value="in_progress">In Progress</option>
+          <option value="resolved">Resolved</option>
+          <option value="closed">Closed</option>
+        </select>
+        <select id="support-filter-priority">
+          <option value="">All Priority</option>
+          <option value="urgent">Urgent</option>
+          <option value="high">High</option>
+          <option value="normal">Normal</option>
+          <option value="low">Low</option>
+        </select>
+      </div>
+      <label>
+        <input type="text" id="support-filter-q" placeholder="Search case, guild, text">
+      </label>
+      <div id="support-cases-list"></div>
+    </div>
+    <div>
+      <h3 id="support-thread-title">Case Thread</h3>
+      <p class="muted" id="support-thread-meta">Select a case to see details.</p>
+      <div id="support-messages" class="support-messages"></div>
+      <div class="support-actions">
+        <button class="btn" id="support-assign-me" type="button">Assign To Me</button>
+        <button class="btn" id="support-unassign" type="button">Unassign</button>
+        <button class="btn" id="support-mark-resolved" type="button">Mark Resolved</button>
+        <button class="btn" id="support-mark-open" type="button">Reopen</button>
+      </div>
+      <form id="support-reply-form">
+        <label>Reply
+          <textarea name="message" rows="3" maxlength="3000" placeholder="Write update to customer/support..."></textarea>
+        </label>
+        <label class="inline">
+          <input type="checkbox" name="visibility_internal" id="support-visibility-internal">
+          Internal note (support only)
+        </label>
+        <button class="btn" type="submit">Send Reply</button>
+        <div class="grid2">
+          <button class="btn" type="button" id="support-quick-need-steps">Ask For Steps</button>
+          <button class="btn" type="button" id="support-quick-fixed">Send Fix Confirmation</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</section>
+
+<section class="section" data-section="welcome">{% include 'module_welcome.html' %}</section>
+<section class="section" data-section="autorole">{% include 'module_roles.html' %}</section>
+<section class="section" data-section="automod">{% include 'module_automod.html' %}</section>
+<section class="section" data-section="custom_commands">{% include 'module_custom_commands.html' %}</section>
+<section class="section" data-section="commands">{% include 'module_commands.html' %}</section>
+
+<section class="section" data-section="logging">
+  <div class="card">
+    <h2>Logging</h2>
+    <p class="muted">Sends moderation and member events to the selected log channel.</p>
+    <form data-module-form data-module="logging" data-guild="{{ guild_id }}">
+      <label class="inline"><input type="checkbox" name="enabled" {% if cfg.modules.logging.enabled %}checked{% endif %}> Enabled</label>
+      <label>Log Channel
+        <select name="channel_id">
+          <option value="">Select channel</option>
+          {% for c in channel_options %}
+          <option value="{{ c.id }}" {% if cfg.modules.logging.channel_id == c.id %}selected{% endif %}>#{{ c.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <div class="grid2">
+        <label class="inline"><input type="checkbox" name="joins" {% if cfg.modules.logging.joins %}checked{% endif %}> Joins</label>
+        <label class="inline"><input type="checkbox" name="leaves" {% if cfg.modules.logging.leaves %}checked{% endif %}> Leaves</label>
+        <label class="inline"><input type="checkbox" name="bans" {% if cfg.modules.logging.bans %}checked{% endif %}> Bans</label>
+        <label class="inline"><input type="checkbox" name="kicks" {% if cfg.modules.logging.kicks %}checked{% endif %}> Kicks</label>
+      </div>
+      <button class="btn" type="submit">Save Logging</button>
+    </form>
+  </div>
+</section>
+
+<section class="section" data-section="stats">
+  <div class="card">
+    <h2>Server Stats</h2>
+    {% include 'module_stats.html' %}
+  </div>
+</section>
+
+<section class="section" data-section="analytics">
+  <div class="card">
+    <h2>Analytics</h2>
+    <p class="muted">Shows events over time so you can track activity and module usage.</p>
+    <div class="grid2">
+      <button class="btn" id="analytics-daily" type="button">Daily</button>
+      <button class="btn" id="analytics-weekly" type="button">Weekly</button>
+    </div>
+    <div class="analytics-wrap">
+      <canvas id="analytics-chart"></canvas>
+    </div>
+  </div>
+</section>
+
+<section class="section" data-section="moderation_tools">{% include 'module_moderation_tools.html' %}</section>
+<section class="section" data-section="reaction_roles">{% include 'module_reaction_roles.html' %}</section>
+<section class="section" data-section="leveling_system">{% include 'module_leveling_system.html' %}</section>
+<section class="section" data-section="webhooks">{% include 'module_webhooks.html' %}</section>
+<section class="section" data-section="integrations">{% include 'module_integrations.html' %}</section>
+<section class="section" data-section="premium">{% include 'module_premium.html' %}</section>
+<section class="section" data-section="settings">{% include 'module_settings.html' %}</section>
+{% endblock %}

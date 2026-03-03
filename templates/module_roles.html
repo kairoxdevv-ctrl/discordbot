@@ -1,0 +1,17 @@
+<div class="card">
+  <h2>Autorole</h2>
+  <p class="muted">Automatically assigns a role to new members when they join.</p>
+  <form data-module-form data-module="autorole" data-guild="{{ guild_id }}">
+    <label class="inline"><input type="checkbox" name="enabled" {% if cfg.modules.autorole.enabled %}checked{% endif %}> Enabled</label>
+    <label>Role
+      <select name="role_id">
+        <option value="">Select role</option>
+        {% for r in role_options %}
+        <option value="{{ r.id }}" {% if cfg.modules.autorole.role_id == r.id %}selected{% endif %}>{{ r.name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <p class="hint">The bot role must be above the target role in role hierarchy.</p>
+    <button class="btn" type="submit">Save Autorole</button>
+  </form>
+</div>

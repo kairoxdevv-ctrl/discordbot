@@ -1,0 +1,14 @@
+<div class="card">
+  <h2>Integrations</h2>
+  <p class="muted">Settings for external API integrations and sync interval.</p>
+  <form data-module-form data-module="integrations" data-guild="{{ guild_id }}">
+    {% set m = cfg.modules.get('integrations', {}) %}
+    <label class="inline"><input type="checkbox" name="enabled" {% if m.get('enabled') %}checked{% endif %}> Enabled</label>
+    <label>API Base URL <input type="text" name="api_base_url" value="{{ m.get('api_base_url','') }}"></label>
+    <div class="grid2">
+      <label>API Key Hint <input type="text" name="api_key_hint" value="{{ m.get('api_key_hint','') }}"></label>
+      <label>Sync Interval Minutes <input type="number" name="sync_interval_minutes" min="1" max="1440" value="{{ m.get('sync_interval_minutes', 15) }}"></label>
+    </div>
+    <button class="btn" type="submit">Save Integrations</button>
+  </form>
+</div>

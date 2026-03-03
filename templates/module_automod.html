@@ -1,0 +1,59 @@
+<div class="card">
+  <h2>Automod</h2>
+  <p class="muted">Automatically filters messages and can warn, log, or remove content.</p>
+  <form data-module-form data-module="automod" data-guild="{{ guild_id }}">
+    <label class="inline"><input type="checkbox" name="enabled" {% if cfg.modules.automod.enabled %}checked{% endif %}> Enabled</label>
+    <div class="grid2">
+      <label class="inline"><input type="checkbox" name="anti_invite" {% if cfg.modules.automod.anti_invite %}checked{% endif %}> Anti Invite</label>
+      <label class="inline"><input type="checkbox" name="anti_links" {% if cfg.modules.automod.anti_links %}checked{% endif %}> Anti Links</label>
+      <label class="inline"><input type="checkbox" name="anti_spam" {% if cfg.modules.automod.anti_spam %}checked{% endif %}> Anti Spam</label>
+      <label class="inline"><input type="checkbox" name="anti_mass_mentions" {% if cfg.modules.automod.anti_mass_mentions %}checked{% endif %}> Anti Mass Mentions</label>
+      <label class="inline"><input type="checkbox" name="anti_caps" {% if cfg.modules.automod.anti_caps %}checked{% endif %}> Anti CAPS</label>
+      <label class="inline"><input type="checkbox" name="block_attachments" {% if cfg.modules.automod.block_attachments %}checked{% endif %}> Block Attachments</label>
+      <label class="inline"><input type="checkbox" name="delete_message" {% if cfg.modules.automod.delete_message is not defined or cfg.modules.automod.delete_message %}checked{% endif %}> Delete Message</label>
+      <label class="inline"><input type="checkbox" name="send_warning" {% if cfg.modules.automod.send_warning is not defined or cfg.modules.automod.send_warning %}checked{% endif %}> Send Warning</label>
+      <label class="inline"><input type="checkbox" name="log_violations" {% if cfg.modules.automod.log_violations %}checked{% endif %}> Log Violations</label>
+      <label class="inline"><input type="checkbox" name="case_sensitive" {% if cfg.modules.automod.case_sensitive %}checked{% endif %}> Case Sensitive Word Match</label>
+    </div>
+    <div class="grid2">
+      <label>Spam Threshold <input type="number" name="spam_threshold" min="2" max="12" value="{{ cfg.modules.automod.spam_threshold }}"></label>
+      <label>Spam Window Seconds <input type="number" name="spam_window_seconds" min="3" max="20" value="{{ cfg.modules.automod.spam_window_seconds }}"></label>
+      <label>Mentions Threshold <input type="number" name="mention_threshold" min="2" max="15" value="{{ cfg.modules.automod.mention_threshold or 5 }}"></label>
+      <label>CAPS Threshold % <input type="number" name="caps_threshold" min="50" max="100" value="{{ cfg.modules.automod.caps_threshold or 80 }}"></label>
+      <label>Max Message Length (0=off) <input type="number" name="max_message_length" min="0" max="4000" value="{{ cfg.modules.automod.max_message_length or 0 }}"></label>
+      <label>Max Attachment Size MB <input type="number" name="max_attachment_size_mb" min="1" max="100" value="{{ cfg.modules.automod.max_attachment_size_mb or 8 }}"></label>
+      <label>Warn Delete After (sec) <input type="number" name="warning_delete_after_seconds" min="1" max="60" value="{{ cfg.modules.automod.warning_delete_after_seconds or 6 }}"></label>
+      <label>Word Match Mode
+        <select name="word_match_mode">
+          <option value="contains" {% if (cfg.modules.automod.word_match_mode or 'contains') == 'contains' %}selected{% endif %}>Contains</option>
+          <option value="whole_word" {% if cfg.modules.automod.word_match_mode == 'whole_word' %}selected{% endif %}>Whole Word</option>
+        </select>
+      </label>
+    </div>
+    <label>Allowed Link Domains (one per line or comma separated)
+      <textarea name="allowed_domains" rows="4" placeholder="youtube.com&#10;github.com">{{ cfg.modules.automod.allowed_domains | join('\n') }}</textarea>
+    </label>
+    <p class="hint">If Anti Links is enabled, only these domains are allowed.</p>
+    <div class="grid2">
+      <label>Exempt Channels (hold Ctrl/Cmd for multi-select)
+        <select name="exempt_channel_ids" multiple size="6">
+          {% for c in channel_options %}
+          <option value="{{ c.id }}" {% if c.id in (cfg.modules.automod.exempt_channel_ids or []) %}selected{% endif %}>#{{ c.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Exempt Roles (hold Ctrl/Cmd for multi-select)
+        <select name="exempt_role_ids" multiple size="6">
+          {% for r in role_options %}
+          <option value="{{ r.id }}" {% if r.id in (cfg.modules.automod.exempt_role_ids or []) %}selected{% endif %}>@{{ r.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+    </div>
+    <label>Banned Words (one per line or comma separated)
+      <textarea name="banned_words" rows="8" placeholder="badword1&#10;badword2">{{ cfg.modules.automod.banned_words | join('\n') }}</textarea>
+    </label>
+    <p class="hint">Each word or phrase is blocked based on the selected match mode.</p>
+    <button class="btn" type="submit">Save Automod</button>
+  </form>
+</div>

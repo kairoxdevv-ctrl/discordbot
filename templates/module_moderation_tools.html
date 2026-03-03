@@ -1,0 +1,30 @@
+<div class="card">
+  <h2>Moderation Tools</h2>
+  <p class="muted">Rules for warnings and automatic actions when thresholds are reached.</p>
+  <form data-module-form data-module="moderation_tools" data-guild="{{ guild_id }}">
+    {% set m = cfg.modules.get('moderation_tools', {}) %}
+    <label class="inline"><input type="checkbox" name="enabled" {% if m.get('enabled') %}checked{% endif %}> Enabled</label>
+    <div class="grid2">
+      <label>Warn Threshold <input type="number" name="warn_threshold" min="1" max="10" value="{{ m.get('warn_threshold', 3) }}"></label>
+      <label>Timeout Minutes <input type="number" name="timeout_minutes" min="1" max="1440" value="{{ m.get('timeout_minutes', 10) }}"></label>
+    </div>
+    <label class="inline"><input type="checkbox" name="auto_kick" {% if m.get('auto_kick') %}checked{% endif %}> Auto kick on threshold</label>
+    <p class="hint">If disabled, timeout minutes are used when warn threshold is reached.</p>
+    <label>Moderator Roles (extra access, hold Ctrl/Cmd for multi-select)
+      <select name="moderator_role_ids" multiple size="6">
+        {% for r in role_options %}
+        <option value="{{ r.id }}" {% if r.id in (m.get('moderator_role_ids', [])) %}selected{% endif %}>@{{ r.name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <div class="grid2">
+      <label class="inline"><input type="checkbox" name="command_warn" {% if m.get('command_warn', true) %}checked{% endif %}> Enable /warn</label>
+      <label class="inline"><input type="checkbox" name="command_warnings" {% if m.get('command_warnings', true) %}checked{% endif %}> Enable /warnings</label>
+      <label class="inline"><input type="checkbox" name="command_clearwarnings" {% if m.get('command_clearwarnings', true) %}checked{% endif %}> Enable /clearwarnings</label>
+      <label class="inline"><input type="checkbox" name="command_timeout" {% if m.get('command_timeout', true) %}checked{% endif %}> Enable /timeout</label>
+      <label class="inline"><input type="checkbox" name="command_kick" {% if m.get('command_kick') %}checked{% endif %}> Enable /kick</label>
+      <label class="inline"><input type="checkbox" name="command_ban" {% if m.get('command_ban') %}checked{% endif %}> Enable /ban</label>
+    </div>
+    <button class="btn" type="submit">Save Moderation Tools</button>
+  </form>
+</div>

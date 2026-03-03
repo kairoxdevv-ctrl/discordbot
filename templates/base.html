@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title or 'Discord SaaS' }}</title>
+  <meta name="csrf-token" content="{{ csrf_token }}">
+  <link rel="stylesheet" href="/dashboard/static/style.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+  <div class="app-shell">
+    {% if sidebar %}
+    <aside class="sidebar" id="sidebar">
+      <div class="brand">Bot Control</div>
+      <button class="nav-item" id="theme-toggle">Theme Toggle</button>
+      <button class="nav-item active" data-nav="overview">Overview</button>
+      <button class="nav-item" data-nav="welcome">Welcome System</button>
+      <button class="nav-item" data-nav="autorole">Autorole</button>
+      <button class="nav-item" data-nav="automod">Automod</button>
+      <button class="nav-item" data-nav="logging">Logging</button>
+      <button class="nav-item" data-nav="custom_commands">Custom Commands</button>
+      <button class="nav-item" data-nav="commands">Commands</button>
+      <button class="nav-item" data-nav="stats">Server Stats</button>
+      <button class="nav-item" data-nav="analytics">Analytics</button>
+      <button class="nav-item" data-nav="support_center">Support Center</button>
+      <button class="nav-item" data-nav="moderation_tools">Moderation Tools</button>
+      <button class="nav-item" data-nav="reaction_roles">Reaction Roles</button>
+      <button class="nav-item" data-nav="leveling_system">Leveling System</button>
+      <button class="nav-item" data-nav="webhooks">Webhooks</button>
+      <button class="nav-item" data-nav="integrations">Integrations</button>
+      <button class="nav-item" data-nav="premium">Premium</button>
+      <button class="nav-item" data-nav="settings">Settings</button>
+      {% if is_support_admin or is_owner_admin %}
+      <a class="nav-item" href="/dashboard/support">Support Inbox</a>
+      {% endif %}
+      <a class="logout-link" href="/dashboard/logout">Logout</a>
+    </aside>
+    {% endif %}
+
+    <main class="main-content">
+      {% if sidebar %}<button id="sidebar-toggle" class="sidebar-toggle">Menu</button>{% endif %}
+      <div id="toast-root"></div>
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+
+  <script src="/dashboard/static/app.js"></script>
+</body>
+</html>

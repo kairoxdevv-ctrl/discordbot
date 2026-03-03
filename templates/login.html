@@ -1,0 +1,12 @@
+{% extends 'base.html' %}
+{% set sidebar = false %}
+{% set title = 'Login' %}
+{% block content %}
+<div class="auth-wrap">
+  <div class="card auth-card">
+    <h1>{{ login_title or 'Discord Bot Dashboard' }}</h1>
+    <p class="muted">{{ login_subtitle or 'Secure OAuth2 sign-in' }}</p>
+    <a class="btn" href="{{ login_path or '/dashboard/login' }}">Login with Discord</a>
+  </div>
+</div>
+{% endblock %}

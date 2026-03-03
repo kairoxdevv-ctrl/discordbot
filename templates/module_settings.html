@@ -1,0 +1,98 @@
+<div class="card">
+  <h2>Settings</h2>
+  <p class="muted">Base settings for language, timezone, and alerts.</p>
+  <form data-module-form data-module="settings" data-guild="{{ guild_id }}">
+    {% set m = cfg.modules.get('settings', {}) %}
+    <label class="inline"><input type="checkbox" name="enabled" {% if m.get('enabled', True) %}checked{% endif %}> Enabled</label>
+    <div class="grid2">
+      <label>Language <input type="text" name="language" value="{{ m.get('language', 'en') }}"></label>
+      <label>Timezone <input type="text" name="timezone" value="{{ m.get('timezone', 'UTC') }}"></label>
+    </div>
+    <label class="inline"><input type="checkbox" name="alerts_enabled" {% if m.get('alerts_enabled', True) %}checked{% endif %}> Alerts Enabled</label>
+    <h3>Ticket Panel</h3>
+    <p class="muted">Post a ticket panel to a channel directly from the dashboard.</p>
+    <label>Panel Channel
+      <select name="ticket_panel_channel_id">
+        <option value="">Select channel...</option>
+        {% for c in channel_options %}
+          <option value="{{ c.id }}" {% if m.get('ticket_panel_channel_id','') == c.id %}selected{% endif %}>#{{ c.name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Panel Title <input type="text" name="ticket_panel_title" value="{{ m.get('ticket_panel_title', 'Need Support?') }}"></label>
+    <label>Panel Text
+      <textarea name="ticket_panel_body" rows="4">{{ m.get('ticket_panel_body', 'Click the button below to open a private support ticket.') }}</textarea>
+    </label>
+    <label>Last Panel Message ID <input type="text" name="ticket_panel_message_id" value="{{ m.get('ticket_panel_message_id', '') }}"></label>
+    <label class="inline"><input type="checkbox" name="create_ticket_panel"> Publish Panel to Channel When Saving</label>
+    <h3>Verification</h3>
+    <p class="muted">Set up anti-raid verification and lock channels until users are verified.</p>
+    <label class="inline"><input type="checkbox" name="verify_enabled" {% if m.get('verify_enabled', True) %}checked{% endif %}> Enable Verification</label>
+    <label class="inline"><input type="checkbox" name="lock_enabled" {% if m.get('lock_enabled', False) %}checked{% endif %}> Lock Channels Until Verified</label>
+    <div class="grid2">
+      <label>Verified Role
+        <select name="verified_role_id">
+          <option value="">Select role...</option>
+          {% for r in role_options %}
+            <option value="{{ r.id }}" {% if (m.get('verified_role_id','') or m.get('verify_role_id','')) == r.id %}selected{% endif %}>@{{ r.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Verify Channel
+        <select name="verify_channel_id">
+          <option value="">Select channel...</option>
+          {% for c in channel_options %}
+            <option value="{{ c.id }}" {% if (m.get('verify_channel_id','') or m.get('verify_panel_channel_id','')) == c.id %}selected{% endif %}>#{{ c.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+    </div>
+    <div class="grid2">
+      <label>Lock Mode
+        <select name="lock_mode">
+          {% set lm = m.get('lock_mode', 'all_except_verify') %}
+          <option value="all_except_verify" {% if lm == 'all_except_verify' %}selected{% endif %}>Lock all channels except verify</option>
+          <option value="selected_categories" {% if lm == 'selected_categories' %}selected{% endif %}>Lock selected categories only</option>
+        </select>
+      </label>
+      <label>Minimum Account Age (days)
+        <input type="number" name="verify_min_account_age_days" min="0" max="365" value="{{ m.get('verify_min_account_age_days', 7) }}">
+      </label>
+    </div>
+    <label class="inline"><input type="checkbox" name="strict_hide_unverified" {% if m.get('strict_hide_unverified', False) %}checked{% endif %}> Strict Hide Mode (advanced)</label>
+    <label>Lock Categories (used when lock mode is selected categories)
+      <select name="verify_lock_category_ids" multiple size="6">
+        {% for cat in category_options %}
+          <option value="{{ cat.id }}" {% if cat.id in (m.get('verify_lock_category_ids', []) or []) %}selected{% endif %}>{{ cat.name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <div class="grid2">
+      <button class="btn" type="button" id="verify-apply-lock" data-guild="{{ guild_id }}">Apply Lock To Server</button>
+      <button class="btn" type="button" id="verify-restore-lock" data-guild="{{ guild_id }}">Restore Default Permissions</button>
+    </div>
+    <label>Verify Panel Channel
+      <select name="verify_panel_channel_id">
+        <option value="">Select channel...</option>
+        {% for c in channel_options %}
+          <option value="{{ c.id }}" {% if (m.get('verify_panel_channel_id','') or m.get('verify_channel_id','')) == c.id %}selected{% endif %}>#{{ c.name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Verify Panel Title <input type="text" name="verify_panel_title" value="{{ m.get('verify_panel_title', 'Server Verification') }}"></label>
+    <label>Verify Panel Text
+      <textarea name="verify_panel_body" rows="4">{{ m.get('verify_panel_body', 'Click the button below to verify and unlock full access.') }}</textarea>
+    </label>
+    <label>Channels Verified Members Can Access
+      <select name="verify_visible_channel_ids" multiple size="10">
+        {% for c in channel_options %}
+          <option value="{{ c.id }}" {% if c.id in (m.get('verify_visible_channel_ids', []) or []) %}selected{% endif %}>#{{ c.name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <p class="hint">Select channels and apply to set visibility for the verified role.</p>
+    <label>Last Verify Message ID <input type="text" name="verify_panel_message_id" value="{{ m.get('verify_panel_message_id', '') }}"></label>
+    <label class="inline"><input type="checkbox" name="create_verify_panel"> Publish Verify Panel When Saving</label>
+    <button class="btn" type="submit">Save Settings</button>
+  </form>
+</div>

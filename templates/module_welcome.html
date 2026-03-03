@@ -1,0 +1,32 @@
+<div class="card">
+  <h2>Welcome System</h2>
+  <p class="muted">Sends an automatic welcome message when a new member joins.</p>
+  <form data-module-form data-module="welcome" data-guild="{{ guild_id }}" id="welcome-form">
+    <label class="inline"><input type="checkbox" name="enabled" {% if cfg.modules.welcome.enabled %}checked{% endif %}> Enabled</label>
+    <label>Channel
+      <select name="channel_id">
+        <option value="">Select channel</option>
+        {% for c in channel_options %}
+        <option value="{{ c.id }}" {% if cfg.modules.welcome.channel_id == c.id %}selected{% endif %}>#{{ c.name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <p class="hint">Choose the channel where welcome messages are posted.</p>
+    <label>Title <input type="text" name="title" value="{{ cfg.modules.welcome.title }}"></label>
+    <label>Description <textarea name="description" rows="5">{{ cfg.modules.welcome.description }}</textarea></label>
+    <p class="hint">Use clear text so new members know exactly what to do next.</p>
+    <div class="grid2">
+      <label>Color <input type="color" name="color" value="{{ cfg.modules.welcome.color }}"></label>
+      <label>Footer <input type="text" name="footer" value="{{ cfg.modules.welcome.footer }}"></label>
+    </div>
+    <label>Image URL <input type="text" name="image" value="{{ cfg.modules.welcome.image }}"></label>
+    <label>Thumbnail URL <input type="text" name="thumbnail" value="{{ cfg.modules.welcome.thumbnail }}"></label>
+    <button class="btn" type="submit">Save Welcome</button>
+  </form>
+
+  <div class="preview" id="welcome-preview">
+    <h3 id="pv-title">{{ cfg.modules.welcome.title }}</h3>
+    <p id="pv-desc">{{ cfg.modules.welcome.description }}</p>
+    <p id="pv-footer" class="muted">{{ cfg.modules.welcome.footer }}</p>
+  </div>
+</div>

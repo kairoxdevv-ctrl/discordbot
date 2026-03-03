@@ -1,0 +1,21 @@
+<div class="card">
+  <h2>Leveling System</h2>
+  <p class="muted">Rewards activity with XP and sends level-up notifications.</p>
+  <form data-module-form data-module="leveling_system" data-guild="{{ guild_id }}">
+    {% set m = cfg.modules.get('leveling_system', {}) %}
+    <label class="inline"><input type="checkbox" name="enabled" {% if m.get('enabled') %}checked{% endif %}> Enabled</label>
+    <div class="grid2">
+      <label>XP per Message <input type="number" name="xp_per_message" min="1" max="200" value="{{ m.get('xp_per_message', 10) }}"></label>
+      <label>Cooldown Seconds <input type="number" name="cooldown_seconds" min="5" max="600" value="{{ m.get('cooldown_seconds', 30) }}"></label>
+    </div>
+    <label>Level Up Channel
+      <select name="level_up_channel_id">
+        <option value="">Select channel</option>
+        {% for c in channel_options %}
+        <option value="{{ c.id }}" {% if m.get('level_up_channel_id') == c.id %}selected{% endif %}>#{{ c.name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <button class="btn" type="submit">Save Leveling System</button>
+  </form>
+</div>

@@ -1,0 +1,32 @@
+<div class="card">
+  <h2>Reaction Roles</h2>
+  <p class="muted">Map emoji reactions to roles on a specific message.</p>
+  <form data-module-form data-module="reaction_roles" data-guild="{{ guild_id }}">
+    {% set m = cfg.modules.get('reaction_roles', {}) %}
+    {% set pairs = m.get('pairs', []) %}
+    <label class="inline"><input type="checkbox" name="enabled" {% if m.get('enabled') %}checked{% endif %}> Enabled</label>
+    <div class="grid2">
+      <label>Channel
+        <select name="channel_id">
+          <option value="">Select channel</option>
+          {% for c in channel_options %}
+          <option value="{{ c.id }}" {% if m.get('channel_id') == c.id %}selected{% endif %}>#{{ c.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Message ID <input type="text" name="message_id" value="{{ m.get('message_id','') }}"></label>
+    </div>
+    <p class="hint">Message ID is required so the bot knows exactly which post controls roles.</p>
+    <label>Message Text (used when auto-creating message, supports <code>{roles}</code>)
+      <textarea name="message_template" rows="3">{{ m.get('message_template', 'React below to get your roles.') }}</textarea>
+    </label>
+    <label class="inline"><input type="checkbox" name="show_role_list" {% if m.get('show_role_list', true) %}checked{% endif %}> Auto append role list if <code>{roles}</code> is not used</label>
+    <label class="inline"><input type="checkbox" name="create_message"> Create/replace message now in selected channel</label>
+    <p class="hint">When checked, a new reaction-role message is created immediately on Save.</p>
+    <label>Pairs (one per line: <code>emoji|role_id</code>)
+      <textarea name="pairs_raw" rows="6">{% for p in pairs %}{{ p.get('emoji','') }}|{{ p.get('role_id','') }}
+{% endfor %}</textarea>
+    </label>
+    <button class="btn" type="submit">Save Reaction Roles</button>
+  </form>
+</div>

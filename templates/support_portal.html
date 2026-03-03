@@ -1,0 +1,92 @@
+{% extends 'base.html' %}
+{% set sidebar = false %}
+{% set title = 'Support' %}
+{% block content %}
+<div class="topbar">
+  <div>
+    <h1>Support: {{ guild_name }}</h1>
+    <p class="muted">Get help from the support team.</p>
+  </div>
+  <div class="grid2">
+    {% if user and user.username %}
+    <a class="btn danger" href="/dashboard/logout">Logout</a>
+    {% endif %}
+  </div>
+</div>
+
+{% if state == 'login_required' %}
+<div class="card">
+  <p class="muted">Sign in with Discord to open and track support cases.</p>
+  <a class="btn" href="/support/login/{{ guild_id }}">Login with Discord</a>
+</div>
+{% elif state == 'forbidden' %}
+<div class="card">
+  <p class="muted">You must be a member of this server to use support.</p>
+</div>
+{% else %}
+<section class="section active" data-section="support_center">
+  <div class="card">
+    <h2>Create Support Case</h2>
+    <form id="support-create-form" data-guild="{{ guild_id }}">
+      <div class="grid2">
+        <label>Subject
+          <input type="text" name="subject" maxlength="140" placeholder="Short issue summary">
+        </label>
+        <label>Priority
+          <select name="priority">
+            <option value="normal">Normal</option>
+            <option value="low">Low</option>
+            <option value="high">High</option>
+            <option value="urgent">Urgent</option>
+          </select>
+        </label>
+      </div>
+      <label>Message
+        <textarea name="message" rows="4" maxlength="3000" placeholder="Describe your issue in detail."></textarea>
+      </label>
+      <button class="btn" type="submit">Create Case</button>
+    </form>
+  </div>
+  <div class="card support-grid" id="support-center" data-guild="{{ guild_id }}" data-support-privileged="0">
+    <div>
+      <h3>My Cases</h3>
+      <div class="grid2">
+        <select id="support-filter-status">
+          <option value="">All Status</option>
+          <option value="open">Open</option>
+          <option value="in_progress">In Progress</option>
+          <option value="resolved">Resolved</option>
+          <option value="closed">Closed</option>
+        </select>
+        <select id="support-filter-priority">
+          <option value="">All Priority</option>
+          <option value="urgent">Urgent</option>
+          <option value="high">High</option>
+          <option value="normal">Normal</option>
+          <option value="low">Low</option>
+        </select>
+      </div>
+      <label>
+        <input type="text" id="support-filter-q" placeholder="Search my cases">
+      </label>
+      <div id="support-cases-list"></div>
+    </div>
+    <div>
+      <h3 id="support-thread-title">Case Thread</h3>
+      <p class="muted" id="support-thread-meta">Select a case.</p>
+      <div id="support-messages" class="support-messages"></div>
+      <div class="support-actions">
+        <button class="btn" id="support-mark-resolved" type="button">Mark Resolved</button>
+        <button class="btn" id="support-mark-open" type="button">Reopen</button>
+      </div>
+      <form id="support-reply-form">
+        <label>Reply
+          <textarea name="message" rows="3" maxlength="3000" placeholder="Add more details or answer support."></textarea>
+        </label>
+        <button class="btn" type="submit">Send Reply</button>
+      </form>
+    </div>
+  </div>
+</section>
+{% endif %}
+{% endblock %}

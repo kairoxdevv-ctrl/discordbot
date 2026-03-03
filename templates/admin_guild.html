@@ -1,0 +1,49 @@
+{% extends 'base.html' %}
+{% set sidebar = false %}
+{% set title = 'Admin Guild' %}
+{% block content %}
+<div class="topbar">
+  <div>
+    <h1>{{ guild.name }}</h1>
+    <p class="muted">{{ guild.id }}</p>
+  </div>
+  <a class="btn" href="/admin/servers">Back to Servers</a>
+</div>
+
+<div class="stats">
+  <div class="stat"><span>Members</span><strong>{{ guild.member_count }}</strong></div>
+  <div class="stat"><span>Channels</span><strong>{{ guild.channels }}</strong></div>
+  <div class="stat"><span>Roles</span><strong>{{ guild.roles }}</strong></div>
+</div>
+
+<div class="card">
+  <h2>Members (Cached)</h2>
+  <p class="muted">Full member list based on current bot cache/intents.</p>
+  <div style="overflow:auto;">
+    <table class="table">
+      <thead>
+        <tr>
+          <th>User</th>
+          <th>ID</th>
+          <th>Display Name</th>
+          <th>Status</th>
+          <th>Top Role</th>
+          <th>Bot</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for m in members %}
+        <tr>
+          <td>{{ m.username }}</td>
+          <td>{{ m.id }}</td>
+          <td>{{ m.display_name }}</td>
+          <td>{{ m.status }}</td>
+          <td>{{ m.top_role }}</td>
+          <td>{{ 'Yes' if m.bot else 'No' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

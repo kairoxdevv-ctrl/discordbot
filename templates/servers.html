@@ -1,0 +1,28 @@
+{% extends 'base.html' %}
+{% set sidebar = false %}
+{% set title = 'Servers' %}
+{% block content %}
+<div class="topbar">
+  <div>
+    <h1>Servers</h1>
+    <p class="muted">{{ user.username }}</p>
+  </div>
+  <div class="grid2">
+    {% if is_support_admin or is_owner_admin %}
+    <a class="btn" href="/dashboard/support">Support Inbox</a>
+    {% endif %}
+    <a class="btn danger" href="/dashboard/logout">Logout</a>
+  </div>
+</div>
+
+<div class="card">
+  {% for g in guilds %}
+  <a class="server-item" href="/dashboard/guild/{{ g.id }}">
+    <span>{{ g.name }}</span>
+    <small>{{ g.id }}</small>
+  </a>
+  {% else %}
+  <p class="muted">No manageable servers found.</p>
+  {% endfor %}
+</div>
+{% endblock %}

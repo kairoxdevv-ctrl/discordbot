@@ -1,0 +1,14 @@
+<div class="card">
+  <h2>Webhooks</h2>
+  <p class="muted">Sends notifications to an external URL for selected events.</p>
+  <form data-module-form data-module="webhooks" data-guild="{{ guild_id }}">
+    {% set m = cfg.modules.get('webhooks', {}) %}
+    <label class="inline"><input type="checkbox" name="enabled" {% if m.get('enabled') %}checked{% endif %}> Enabled</label>
+    <label>Notify URL <input type="text" name="notify_url" value="{{ m.get('notify_url','') }}"></label>
+    <label>Events (comma separated)
+      <input type="text" name="events" value="{{ m.get('events', []) | join(', ') }}">
+    </label>
+    <p class="hint">Example: <code>join,leave,ban,module_save:welcome</code></p>
+    <button class="btn" type="submit">Save Webhooks</button>
+  </form>
+</div>

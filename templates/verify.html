@@ -1,0 +1,20 @@
+{% extends 'base.html' %}
+{% set sidebar = false %}
+{% set title = 'Server Verification' %}
+{% block content %}
+<div class="auth-wrap">
+  <div class="card auth-card">
+    <h1>Verify for {{ guild_name }}</h1>
+    {% if state == 'login_required' %}
+      <p class="muted">Sign in with Discord to complete verification.</p>
+      <a class="btn" href="/verify/login/{{ guild_id }}">Login with Discord</a>
+    {% elif state == 'success' %}
+      <p class="muted">{{ message }}</p>
+      <p class="muted">You can close this page and return to Discord.</p>
+    {% else %}
+      <p class="muted">{{ message or 'Verification failed. Please try again.' }}</p>
+      <a class="btn" href="/verify/{{ guild_id }}">Try Again</a>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

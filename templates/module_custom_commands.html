@@ -1,0 +1,15 @@
+<div class="card">
+  <h2>Custom Commands</h2>
+  <p class="muted">Create your own slash commands with custom responses per server.</p>
+  <form data-module-form data-module="custom_commands" data-guild="{{ guild_id }}">
+    {% set m = cfg.modules.get('custom_commands', {}) %}
+    {% set cmds = m.get('commands', []) %}
+    <label class="inline"><input type="checkbox" name="enabled" {% if m.get('enabled') %}checked{% endif %}> Enabled</label>
+    <label>Commands (one per line: <code>name|description|response</code>)
+      <textarea name="commands_raw" rows="8">{% for c in cmds %}{{ c.get('name','') }}|{{ c.get('description','') }}|{{ c.get('response','') }}
+{% endfor %}</textarea>
+    </label>
+    <p class="hint">Example: <code>rules|Show rules|Read the rules in #rules</code></p>
+    <button class="btn" type="submit">Save Custom Commands</button>
+  </form>
+</div>

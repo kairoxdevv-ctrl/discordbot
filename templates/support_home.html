@@ -1,0 +1,25 @@
+{% extends 'base.html' %}
+{% set sidebar = false %}
+{% set title = 'Support' %}
+{% block content %}
+<div class="topbar">
+  <div>
+    <h1>Support</h1>
+    <p class="muted">{{ user.username }}</p>
+  </div>
+  <a class="btn danger" href="/dashboard/logout">Logout</a>
+</div>
+
+<div class="card">
+  <h2>Select Server</h2>
+  <p class="muted">Choose the server where you need help with the bot.</p>
+  {% for g in guilds %}
+  <a class="server-item" href="/support/{{ g.id }}">
+    <span>{{ g.name }}</span>
+    <small>Open Support</small>
+  </a>
+  {% else %}
+  <p class="muted">No shared servers found for this account.</p>
+  {% endfor %}
+</div>
+{% endblock %}
