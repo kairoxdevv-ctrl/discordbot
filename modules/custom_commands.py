@@ -1,6 +1,8 @@
 VERSION = "1.1.0"
 import logging
+import os
 import re
+import time
 
 import discord
 from discord import app_commands
@@ -29,6 +31,8 @@ LOGGER = logging.getLogger("discordbot.custom_commands")
 class CustomCommandManager:
     def __init__(self):
         self._registered = {}
+        self._cooldowns = {}
+        self._cooldown_sec = max(1, int(os.getenv("CUSTOM_COMMAND_COOLDOWN_SEC", "3")))
 
     @staticmethod
     def sanitize(commands: list[dict]) -> list[dict]:
@@ -97,13 +101,36 @@ class CustomCommandManager:
                 description = item["description"]
                 response = item["response"]
 
-                def _make_callback(text: str, is_ephemeral: bool):
+                def _make_callback(text: str, is_ephemeral: bool, command_name: str):
                     async def _callback(interaction: discord.Interaction):
+                        key = (
+                            int(getattr(interaction.guild, "id", 0) or 0),
+                            int(getattr(interaction.user, "id", 0) or 0),
+                            str(command_name),
+                        )
+                        now = time.time()
+                        until = float(self._cooldowns.get(key, 0.0))
+                        if now < until:
+                            await interaction.response.send_message(
+                                f"Slow down. Try again in {max(1, int(until - now))}s.",
+                                ephemeral=True,
+                            )
+                            return
+                        self._cooldowns[key] = now + self._cooldown_sec
+                        if len(self._cooldowns) > 20000:
+                            cutoff = now - (self._cooldown_sec * 2)
+                            stale = [k for k, v in self._cooldowns.items() if v < cutoff]
+                            for stale_key in stale:
+                                self._cooldowns.pop(stale_key, None)
                         await interaction.response.send_message(text, ephemeral=is_ephemeral)
                     return _callback
 
                 try:
-                    cmd = app_commands.Command(name=name, description=description, callback=_make_callback(response, ephemeral))
+                    cmd = app_commands.Command(
+                        name=name,
+                        description=description,
+                        callback=_make_callback(response, ephemeral, name),
+                    )
                     tree.add_command(cmd, guild=guild_obj, override=True)
                     added.append(name)
                 except Exception:

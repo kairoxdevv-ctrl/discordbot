@@ -26,6 +26,12 @@ from core.security import RateLimiter, issue_csrf, sanitize_id, sanitize_text, v
 from core.storage import Repository, SQLitePool
 from core.ws_server import WsAuthManager
 from modules import automod, autorole, logging as log_module, welcome
+from repositories.config_repository import ConfigRepository
+from repositories.support_repository import SupportRepository
+from services.config_service import ConfigService
+from services.permission_service import PermissionService
+from services.realtime_service import RealtimeService
+from services.support_service import SupportService
 
 BASE_DIR = Path("/root/discordbot")
 CONFIG_PATH = BASE_DIR / "config.json"
@@ -171,6 +177,11 @@ SCHEDULER_PROVIDER = None
 PROCESS = psutil.Process(os.getpid())
 STARTED_AT = int(time.time())
 MEMORY_SAMPLES = deque(maxlen=24)
+CONFIG_SERVICE = ConfigService(ConfigRepository(CONFIG_ENGINE), ttl_sec=max(5, int(os.getenv("CONFIG_CACHE_TTL_SEC", "30"))))
+PERMISSION_SERVICE = PermissionService()
+REALTIME_SERVICE = RealtimeService(REALTIME_BUS, WS_AUTH)
+SUPPORT_REPOSITORY = None
+SUPPORT_SERVICE = None
 
 
 def _ensure_support_schema():
@@ -333,17 +344,12 @@ def _support_send_webhook(event_name: str, case_row: dict, extra_text: str = "")
 
 
 def _support_maybe_send_sla_alert(case_id: int):
-    row = _db_fetchone_sync("SELECT * FROM support_cases WHERE id=?", (int(case_id),))
+    if SUPPORT_REPOSITORY is None or SUPPORT_SERVICE is None:
+        return
+    row = SUPPORT_REPOSITORY.get_case(int(case_id))
     if not row:
         return
-    now = int(time.time())
-    if not _support_is_sla_breached(row, now):
-        return
-    last_alert = int(row.get("sla_alert_sent_at", 0) or 0)
-    if last_alert and (now - last_alert) < 30 * 60:
-        return
-    _support_send_webhook("SLA breached", row, "Case is waiting on support response.")
-    _db_execute_sync("UPDATE support_cases SET sla_alert_sent_at=?, updated_at=? WHERE id=?", (now, now, int(case_id)))
+    SUPPORT_SERVICE.maybe_send_sla_alert(row, _support_is_sla_breached)
 
 
 _ensure_support_schema()
@@ -597,6 +603,20 @@ def _audit_log(guild_id: str, action_type: str, actor_id: str, actor_name: str, 
     )
 
 
+def _init_support_layer():
+    global SUPPORT_REPOSITORY, SUPPORT_SERVICE
+    SUPPORT_REPOSITORY = SupportRepository(_db_fetchall_sync, _db_fetchone_sync, _db_execute_sync)
+    SUPPORT_SERVICE = SupportService(
+        repository=SUPPORT_REPOSITORY,
+        realtime_service=REALTIME_SERVICE,
+        audit_callback=_audit_log,
+        send_webhook_callback=_support_send_webhook,
+    )
+
+
+_init_support_layer()
+
+
 def get_oauth_url():
     state = os.urandom(24).hex()
     session["oauth_state"] = state
@@ -741,10 +761,12 @@ def create_app():
         return set(session.get("allowed_guild_ids", []))
 
     def can_edit_guild(guild_id: str):
-        gid = str(guild_id)
-        if gid in allowed_guilds():
-            return True
-        return bool(is_owner_user() or is_support_user())
+        return PERMISSION_SERVICE.validate_dashboard_access(
+            manageable_ids=allowed_guilds(),
+            guild_id=str(guild_id),
+            is_owner=is_owner_user(),
+            is_support=is_support_user(),
+        )
 
     async def _apply_verify_channel_lock(guild_id: str):
         if not str(guild_id).isdigit():
@@ -756,7 +778,7 @@ def create_app():
         if me is None or not me.guild_permissions.manage_channels:
             return False, {"error": "bot_missing_manage_channels"}
 
-        settings_cfg = (CONFIG_ENGINE.get_guild(str(guild_id)).get("modules", {}) or {}).get("settings", {}) or {}
+        settings_cfg = (CONFIG_SERVICE.get_guild_config(str(guild_id)).get("modules", {}) or {}).get("settings", {}) or {}
         if not bool(settings_cfg.get("lock_enabled", False)):
             return False, {"error": "lock_disabled"}
         role_id = str(settings_cfg.get("verified_role_id") or settings_cfg.get("verify_role_id") or "").strip()
@@ -850,7 +872,7 @@ def create_app():
 
         settings_cfg["verify_lock_last_applied_channel_ids"] = changed
         settings_cfg["verify_lock_last_applied_role_ids"] = []
-        CONFIG_ENGINE.save_module(str(guild_id), "settings", settings_cfg)
+        CONFIG_SERVICE.update_guild_config(str(guild_id), "settings", settings_cfg)
         LOGGER.info(
             "verify_lock_apply guild_id=%s changed=%s failed=%s mode=%s",
             guild_id,
@@ -870,7 +892,7 @@ def create_app():
         if me is None or not me.guild_permissions.manage_channels:
             return False, {"error": "bot_missing_manage_channels"}
 
-        settings_cfg = (CONFIG_ENGINE.get_guild(str(guild_id)).get("modules", {}) or {}).get("settings", {}) or {}
+        settings_cfg = (CONFIG_SERVICE.get_guild_config(str(guild_id)).get("modules", {}) or {}).get("settings", {}) or {}
         role_id = str(settings_cfg.get("verified_role_id") or settings_cfg.get("verify_role_id") or "").strip()
         if not role_id.isdigit():
             return False, {"error": "verified_role_missing"}
@@ -919,7 +941,7 @@ def create_app():
                 )
         settings_cfg["verify_lock_last_applied_channel_ids"] = []
         settings_cfg["verify_lock_last_applied_role_ids"] = []
-        CONFIG_ENGINE.save_module(str(guild_id), "settings", settings_cfg)
+        CONFIG_SERVICE.update_guild_config(str(guild_id), "settings", settings_cfg)
         LOGGER.info("verify_lock_restore guild_id=%s restored=%s failed=%s", guild_id, restored, len(failed))
         return True, {"restored": restored, "failed": failed}
 
@@ -933,7 +955,7 @@ def create_app():
         if me is None or not me.guild_permissions.manage_channels or not me.guild_permissions.manage_roles:
             return False, "bot_missing_permissions"
 
-        settings_cfg = (CONFIG_ENGINE.get_guild(str(guild_id)).get("modules", {}) or {}).get("settings", {}) or {}
+        settings_cfg = (CONFIG_SERVICE.get_guild_config(str(guild_id)).get("modules", {}) or {}).get("settings", {}) or {}
         role_id = str(settings_cfg.get("verified_role_id") or settings_cfg.get("verify_role_id") or "").strip()
         if not role_id.isdigit():
             return False, "verify_role_missing"
@@ -977,7 +999,7 @@ def create_app():
             except Exception:
                 return False, "member_not_found"
 
-        cfg = CONFIG_ENGINE.get_guild(str(guild_id)).get("modules", {})
+        cfg = CONFIG_SERVICE.get_guild_config(str(guild_id)).get("modules", {})
         settings_cfg = cfg.get("settings", {}) if isinstance(cfg, dict) else {}
         if not bool(settings_cfg.get("enabled", True)):
             return False, "verify_disabled"
@@ -1016,6 +1038,10 @@ def create_app():
         if not logged_in():
             return render_template("login.html")
         return redirect(url_for("dashboard_servers"))
+
+    @app.get("/health")
+    def health_public():
+        return jsonify({"status": "ok", "ts": int(time.time())}), 200
 
     @app.get("/dashboard/login")
     def dashboard_login():
@@ -1322,7 +1348,7 @@ def create_app():
         if not can_edit_guild(guild_id):
             return "Forbidden", 403
 
-        cfg = CONFIG_ENGINE.get_guild(guild_id)
+        cfg = CONFIG_SERVICE.get_guild_config(guild_id)
         guild = RUNTIME.get_guild(int(guild_id))
 
         member_count = 0
@@ -1393,7 +1419,9 @@ def create_app():
     def _get_case_or_none(case_id: str):
         if not str(case_id).isdigit():
             return None
-        return _db_fetchone_sync("SELECT * FROM support_cases WHERE id=?", (int(case_id),))
+        if SUPPORT_SERVICE is None:
+            return None
+        return SUPPORT_SERVICE.get_case(int(case_id))
 
     def _can_access_case(case_row) -> bool:
         if not case_row:
@@ -1434,23 +1462,12 @@ def create_app():
         elif not is_support_or_owner():
             return jsonify({"error": "guild_id_required"}), 400
         sql = """
-            SELECT id, guild_id, guild_name, created_by_id, created_by_name, subject, priority, status,
-                   assigned_to_id, assigned_to_name, created_at, updated_at, last_message_at, last_message_preview,
-                   last_actor_role, requester_last_message_at, support_last_message_at, first_response_at, resolved_at, sla_alert_sent_at
-            FROM support_cases
+            SELECT 1
         """
+        where_sql = ""
         if where:
-            sql += " WHERE " + " AND ".join(where)
-        sql += " ORDER BY updated_at DESC LIMIT 200"
-        rows = _db_fetchall_sync(sql, tuple(params))
-        if q:
-            rows = [
-                x for x in rows
-                if q in str(x.get("subject", "")).lower()
-                or q in str(x.get("guild_name", "")).lower()
-                or q in str(x.get("last_message_preview", "")).lower()
-                or q in str(x.get("id", "")).lower()
-            ]
+            where_sql = " WHERE " + " AND ".join(where)
+        rows = SUPPORT_SERVICE.list_cases(where_sql, tuple(params), q) if SUPPORT_SERVICE else []
         now = int(time.time())
         for row in rows:
             waiting_on = "support" if str(row.get("last_actor_role", "requester")) == "requester" else "requester"
@@ -1494,31 +1511,16 @@ def create_app():
         now = int(time.time())
         guild_obj = RUNTIME.get_guild(int(guild_id)) if str(guild_id).isdigit() else None
         guild_name = guild_obj.name if guild_obj else f"Guild {guild_id}"
-        case_id, _ = _db_execute_sync(
-            """
-            INSERT INTO support_cases (
-              guild_id, guild_name, created_by_id, created_by_name, subject, priority, status,
-              created_at, updated_at, last_message_at, last_message_preview,
-              last_actor_role, requester_last_message_at, support_last_message_at, first_response_at, resolved_at, sla_alert_sent_at
-            ) VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, 'requester', ?, 0, 0, 0, 0)
-            """,
-            (str(guild_id), guild_name, uid, uname, subject, priority, now, now, now, body[:220], now),
+        case_id = SUPPORT_SERVICE.create_case(
+            guild_id=str(guild_id),
+            guild_name=guild_name,
+            created_by_id=uid,
+            created_by_name=uname,
+            subject=subject,
+            priority=priority,
+            body=body,
+            actor_role=actor_role_for_guild(guild_id),
         )
-        _db_execute_sync(
-            """
-            INSERT INTO support_messages (case_id, guild_id, author_id, author_name, author_role, body, visibility, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, 'public', ?)
-            """,
-            (int(case_id), str(guild_id), uid, uname, actor_role_for_guild(guild_id), body, now),
-        )
-        payload = {"type": "support_case_update", "event": "created", "case_id": int(case_id), "guild_id": str(guild_id), "ts": now}
-        REALTIME_BUS.publish(str(guild_id), payload)
-        REALTIME_BUS.publish("support:global", payload)
-        if priority == "urgent":
-            case_row = _db_fetchone_sync("SELECT * FROM support_cases WHERE id=?", (int(case_id),))
-            if case_row:
-                _support_send_webhook("Urgent case created", case_row, "Immediate support attention required.")
-        _audit_log(guild_id, "support_case_created", uid, uname, target_id=str(case_id), metadata={"priority": priority})
         return jsonify({"ok": True, "case_id": int(case_id)})
 
     @app.get("/dashboard/api/support/cases/<case_id>/messages")
@@ -1532,28 +1534,7 @@ def create_app():
             return jsonify({"error": "forbidden"}), 403
         gid = str(case_row.get("guild_id", ""))
         privileged = bool(can_edit_guild(gid) or is_support_or_owner())
-        if privileged:
-            msgs = _db_fetchall_sync(
-                """
-                SELECT id, case_id, guild_id, author_id, author_name, author_role, body, visibility, created_at
-                FROM support_messages
-                WHERE case_id=?
-                ORDER BY created_at ASC, id ASC
-                LIMIT 500
-                """,
-                (int(case_id),),
-            )
-        else:
-            msgs = _db_fetchall_sync(
-                """
-                SELECT id, case_id, guild_id, author_id, author_name, author_role, body, visibility, created_at
-                FROM support_messages
-                WHERE case_id=? AND visibility='public'
-                ORDER BY created_at ASC, id ASC
-                LIMIT 500
-                """,
-                (int(case_id),),
-            )
+        msgs = SUPPORT_SERVICE.list_messages(int(case_id), privileged) if SUPPORT_SERVICE else []
         return jsonify({"case": case_row, "messages": msgs})
 
     @app.post("/dashboard/api/support/cases/<case_id>/messages")
@@ -1580,55 +1561,9 @@ def create_app():
         role = actor_role_for_guild(gid)
         privileged = bool(can_edit_guild(gid) or is_support_or_owner())
         visibility = "internal" if (sanitize_text(data.get("visibility", "public"), 16) == "internal" and privileged) else "public"
-        now = int(time.time())
-        _db_execute_sync(
-            """
-            INSERT INTO support_messages (case_id, guild_id, author_id, author_name, author_role, body, visibility, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (int(case_id), gid, uid, uname, role, body, visibility, now),
-        )
-        new_status = str(case_row.get("status", "open"))
-        requester_last = int(case_row.get("requester_last_message_at", 0) or 0)
-        support_last = int(case_row.get("support_last_message_at", 0) or 0)
-        first_response = int(case_row.get("first_response_at", 0) or 0)
-        resolved_at = int(case_row.get("resolved_at", 0) or 0)
-        if role in {"support_admin", "owner", "server_admin"} and visibility == "public":
-            support_last = now
-            if first_response <= 0:
-                first_response = now
-            if new_status == "open":
-                new_status = "in_progress"
-        if role == "viewer" and visibility == "public":
-            requester_last = now
-            if new_status in {"resolved", "closed"}:
-                new_status = "open"
-                resolved_at = 0
-        _db_execute_sync(
-            """
-            UPDATE support_cases
-            SET status=?, updated_at=?, last_message_at=?, last_message_preview=?, last_actor_role=?,
-                requester_last_message_at=?, support_last_message_at=?, first_response_at=?, resolved_at=?, sla_alert_sent_at=?
-            WHERE id=?
-            """,
-            (
-                new_status,
-                now,
-                now,
-                body[:220],
-                "requester" if role == "viewer" else "support",
-                requester_last,
-                support_last,
-                first_response,
-                resolved_at,
-                0 if role == "viewer" else int(case_row.get("sla_alert_sent_at", 0) or 0),
-                int(case_id),
-            ),
-        )
-        payload = {"type": "support_case_update", "event": "message", "case_id": int(case_id), "guild_id": gid, "ts": now}
-        REALTIME_BUS.publish(gid, payload)
-        REALTIME_BUS.publish("support:global", payload)
-        _audit_log(gid, "support_case_message_added", uid, uname, target_id=str(case_id), metadata={"visibility": visibility})
+        if SUPPORT_SERVICE is None:
+            return jsonify({"ok": False, "error": "support_unavailable"}), 503
+        SUPPORT_SERVICE.add_message(case_row, uid, uname, role, body, visibility)
         _support_maybe_send_sla_alert(int(case_id))
         return jsonify({"ok": True})
 
@@ -1650,22 +1585,9 @@ def create_app():
             return jsonify({"ok": False, "error": "csrf_failed", "csrf_token": new_token}), 403
         action = sanitize_text(data.get("action", "assign_me"), 24).lower()
         uid, uname = current_user_meta()
-        now = int(time.time())
-        gid = str(case_row.get("guild_id", ""))
-        if action == "unassign":
-            _db_execute_sync(
-                "UPDATE support_cases SET assigned_to_id='', assigned_to_name='', updated_at=? WHERE id=?",
-                (now, int(case_id)),
-            )
-        else:
-            _db_execute_sync(
-                "UPDATE support_cases SET assigned_to_id=?, assigned_to_name=?, status='in_progress', updated_at=? WHERE id=?",
-                (uid, uname, now, int(case_id)),
-            )
-        payload = {"type": "support_case_update", "event": "assignment", "case_id": int(case_id), "guild_id": gid, "ts": now}
-        REALTIME_BUS.publish(gid, payload)
-        REALTIME_BUS.publish("support:global", payload)
-        _audit_log(gid, "support_case_assignment", uid, uname, target_id=str(case_id), metadata={"action": action})
+        if SUPPORT_SERVICE is None:
+            return jsonify({"ok": False, "error": "support_unavailable"}), 503
+        SUPPORT_SERVICE.assign_case(case_row, action, uid, uname)
         _support_maybe_send_sla_alert(int(case_id))
         return jsonify({"ok": True})
 
@@ -1694,14 +1616,9 @@ def create_app():
             return jsonify({"ok": False, "error": "forbidden"}), 403
         if status in {"resolved", "open"} and not (is_support_or_owner() or case_creator):
             return jsonify({"ok": False, "error": "forbidden"}), 403
-        now = int(time.time())
-        gid = str(case_row.get("guild_id", ""))
-        resolved_at = now if status in {"resolved", "closed"} else 0
-        _db_execute_sync("UPDATE support_cases SET status=?, updated_at=?, resolved_at=? WHERE id=?", (status, now, resolved_at, int(case_id)))
-        payload = {"type": "support_case_update", "event": "status", "case_id": int(case_id), "guild_id": gid, "ts": now}
-        REALTIME_BUS.publish(gid, payload)
-        REALTIME_BUS.publish("support:global", payload)
-        _audit_log(gid, "support_case_status_changed", uid, str(session.get("user", {}).get("username", "user")), target_id=str(case_id), metadata={"status": status})
+        if SUPPORT_SERVICE is None:
+            return jsonify({"ok": False, "error": "support_unavailable"}), 503
+        SUPPORT_SERVICE.update_status(case_row, status, uid, str(session.get("user", {}).get("username", "user")))
         _support_maybe_send_sla_alert(int(case_id))
         return jsonify({"ok": True})
 
@@ -1715,7 +1632,7 @@ def create_app():
                 return jsonify({"error": "forbidden"}), 403
         elif not (can_edit_guild(gid) or can_access_support_portal(gid)):
             return jsonify({"error": "forbidden"}), 403
-        token = WS_AUTH.issue(session.get("user", {}).get("id", "0"), gid, ttl_sec=120)
+        token = REALTIME_SERVICE.issue_ws_token(session.get("user", {}).get("id", "0"), gid, ttl_sec=120)
         scheme = "wss" if request.is_secure else "ws"
         ws_url = f"{scheme}://{request.host}/dashboard/ws?guild={gid}&token={token}"
         return jsonify({"token": token, "ws_url": ws_url})
@@ -1741,7 +1658,7 @@ def create_app():
                 }
             )
 
-        settings_cfg = (CONFIG_ENGINE.get_guild(str(guild_id)).get("modules", {}) or {}).get("settings", {}) or {}
+        settings_cfg = (CONFIG_SERVICE.get_guild_config(str(guild_id)).get("modules", {}) or {}).get("settings", {}) or {}
         me = guild.me
         perms = getattr(me, "guild_permissions", None)
         verify_role_id = str(settings_cfg.get("verified_role_id") or settings_cfg.get("verify_role_id") or "").strip()
@@ -1902,7 +1819,7 @@ def create_app():
             return jsonify({"ok": False, "error": "csrf_failed", "csrf_token": new_token}), 403
         try:
             if bool(data):
-                cfg = CONFIG_ENGINE.get_guild(str(guild_id))
+                cfg = CONFIG_SERVICE.get_guild_config(str(guild_id))
                 modules = cfg.setdefault("modules", {})
                 settings_cfg = modules.setdefault("settings", {})
                 settings_cfg["lock_enabled"] = boolv(
@@ -1925,7 +1842,7 @@ def create_app():
                 settings_cfg["verify_lock_category_ids"] = [
                     sanitize_id(x) for x in listv(data, "verify_lock_category_ids") if sanitize_id(x)
                 ][:100] or settings_cfg.get("verify_lock_category_ids", [])
-                CONFIG_ENGINE.save_module(str(guild_id), "settings", settings_cfg)
+                CONFIG_SERVICE.update_guild_config(str(guild_id), "settings", settings_cfg)
             ok, out = run_on_bot_loop(_apply_verify_channel_lock(guild_id), timeout_sec=90)
             if not ok:
                 return jsonify({"ok": False, **out}), 400
@@ -2188,7 +2105,7 @@ def create_app():
                 "limits_override": boolv(data, "limits_override", False),
             }
         elif module_name == "settings":
-            current_settings = ((CONFIG_ENGINE.get_guild(str(guild_id)).get("modules", {}) or {}).get("settings", {}) or {})
+            current_settings = ((CONFIG_SERVICE.get_guild_config(str(guild_id)).get("modules", {}) or {}).get("settings", {}) or {})
             verify_enabled = boolv(data, "verify_enabled", True)
             lock_enabled = boolv(data, "lock_enabled", False)
             verified_role_id = sanitize_id(data.get("verified_role_id", "")) or sanitize_id(data.get("verify_role_id", ""))
@@ -2318,8 +2235,8 @@ def create_app():
         else:
             return jsonify({"ok": False, "error": "coming_soon"}), 400
 
-        CONFIG_ENGINE.save_module(str(guild_id), module_name, payload)
-        REALTIME_BUS.publish(str(guild_id), {"type": "module_saved", "module": module_name, "ts": int(time.time())})
+        CONFIG_SERVICE.update_guild_config(str(guild_id), module_name, payload)
+        REALTIME_SERVICE.publish(str(guild_id), {"type": "module_saved", "module": module_name, "ts": int(time.time())})
         uid, uname = current_user_meta()
         _audit_log(str(guild_id), "dashboard_module_saved", uid, uname, metadata={"module": str(module_name)})
         run_async(METRICS.track(str(guild_id), f"module_save:{module_name}", {"module": module_name}))

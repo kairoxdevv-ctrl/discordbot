@@ -6,7 +6,6 @@ import re
 import signal
 import threading
 import time
-from collections import defaultdict, deque
 from datetime import timedelta
 from pathlib import Path
 
@@ -17,8 +16,18 @@ from dotenv import load_dotenv
 from core.metrics import MetricsEngine
 from core.module_registry import ModuleRegistry
 from core.scheduler import TaskScheduler
-from core.ws_server import start_ws_server
 from core.logging_setup import setup_structured_logging
+from core.ws_server import start_ws_server
+from repositories.config_repository import ConfigRepository
+from repositories.guild_repository import GuildRepository
+from repositories.moderation_repository import ModerationRepository
+from services.abuse_service import AbuseService
+from services.config_service import ConfigService
+from services.custom_command_service import CustomCommandService
+from services.guild_service import GuildService
+from services.moderation_service import ModerationService
+from services.permission_service import PermissionService
+from services.realtime_service import RealtimeService
 from dashboard import (
     BASE_DIR,
     CONFIG_ENGINE,
@@ -52,6 +61,7 @@ REGISTRY = ModuleRegistry(MODULES_DIR)
 METRICS = MetricsEngine(REPO)
 SCHEDULER = TaskScheduler(REPO)
 CUSTOM_COMMANDS = CustomCommandManager()
+CUSTOM_COMMAND_SERVICE = CustomCommandService(CUSTOM_COMMANDS, cooldown_sec=max(1, int(os.getenv("CUSTOM_COMMAND_COOLDOWN_SEC", "3"))))
 LOGGER = logging.getLogger("discordbot.bot")
 MODULE_TIMEOUT_SEC = float(os.getenv("MODULE_TIMEOUT_SEC", "8"))
 TREE_SYNC_TIMEOUT_SEC = float(os.getenv("TREE_SYNC_TIMEOUT_SEC", "90"))
@@ -62,53 +72,23 @@ try:
 except Exception:
     CONFIGTEST_OWNER_ID = 1451546709422247987
 _BACKGROUND_TASKS_STARTED = False
-
-
-class AbuseGuard:
-    def __init__(self):
-        self._lock = threading.RLock()
-        self._hits_user = defaultdict(deque)
-        self._hits_guild = defaultdict(deque)
-        self._cleanup_at = 0.0
-        self.user_limit = max(3, int(os.getenv("COMMAND_RATE_LIMIT_PER_USER", "12")))
-        self.guild_limit = max(10, int(os.getenv("COMMAND_RATE_LIMIT_PER_GUILD", "80")))
-        self.window_sec = max(3, int(os.getenv("COMMAND_RATE_LIMIT_WINDOW_SEC", "30")))
-
-    def allow(self, guild_id: int, user_id: int, command: str) -> tuple[bool, int]:
-        now = time.time()
-        key_user = (int(guild_id), int(user_id), str(command))
-        key_guild = (int(guild_id), str(command))
-        with self._lock:
-            if (now - self._cleanup_at) > 300:
-                cutoff = now - self.window_sec
-                for bucket in (self._hits_user, self._hits_guild):
-                    stale_keys = []
-                    for key, dq in bucket.items():
-                        while dq and dq[0] < cutoff:
-                            dq.popleft()
-                        if not dq:
-                            stale_keys.append(key)
-                    for key in stale_keys:
-                        bucket.pop(key, None)
-                self._cleanup_at = now
-
-            q_user = self._hits_user[key_user]
-            q_guild = self._hits_guild[key_guild]
-            cutoff = now - self.window_sec
-            while q_user and q_user[0] < cutoff:
-                q_user.popleft()
-            while q_guild and q_guild[0] < cutoff:
-                q_guild.popleft()
-            if len(q_user) >= self.user_limit or len(q_guild) >= self.guild_limit:
-                oldest = q_user[0] if q_user else (q_guild[0] if q_guild else now)
-                retry_after = max(1, int(self.window_sec - (now - oldest)))
-                return False, retry_after
-            q_user.append(now)
-            q_guild.append(now)
-            return True, 0
-
-
-ABUSE_GUARD = AbuseGuard()
+MODERATION_REPOSITORY = ModerationRepository(REPO.pool)
+GUILD_REPOSITORY = GuildRepository(REPO.pool)
+PERMISSION_SERVICE = PermissionService()
+ABUSE_SERVICE = AbuseService(
+    per_user_limit=max(3, int(os.getenv("COMMAND_RATE_LIMIT_PER_USER", "12"))),
+    per_guild_limit=max(10, int(os.getenv("COMMAND_RATE_LIMIT_PER_GUILD", "80"))),
+    window_sec=max(3, int(os.getenv("COMMAND_RATE_LIMIT_WINDOW_SEC", "30"))),
+    burst_limit=max(2, int(os.getenv("COMMAND_BURST_LIMIT", "6"))),
+    burst_window_sec=max(1, int(os.getenv("COMMAND_BURST_WINDOW_SEC", "5"))),
+)
+CONFIG_SERVICE = ConfigService(
+    ConfigRepository(CONFIG_ENGINE),
+    ttl_sec=max(5, int(os.getenv("CONFIG_CACHE_TTL_SEC", "30"))),
+)
+MODERATION_SERVICE = ModerationService(MODERATION_REPOSITORY, GUILD_REPOSITORY)
+REALTIME_SERVICE = RealtimeService(REALTIME_BUS, WS_AUTH)
+GUILD_SERVICE = GuildService(RUNTIME)
 DASHBOARD_THREAD = None
 
 
@@ -189,7 +169,7 @@ def _on_config_reload():
         return
     try:
         fut = asyncio.run_coroutine_threadsafe(
-            _run_with_timeout(CUSTOM_COMMANDS.sync(tree, CONFIG_ENGINE), "custom_commands_sync_on_reload", timeout_sec=30),
+            _run_with_timeout(CUSTOM_COMMAND_SERVICE.sync(tree, CONFIG_ENGINE), "custom_commands_sync_on_reload", timeout_sec=30),
             loop,
         )
         fut.add_done_callback(lambda f: f.exception() and LOGGER.warning("custom_commands_reload_callback_failed", exc_info=True))
@@ -198,7 +178,7 @@ def _on_config_reload():
 
 
 def guild_modules(guild_id: int):
-    return CONFIG_ENGINE.get_guild(str(guild_id)).get("modules", {})
+    return CONFIG_SERVICE.get_guild_config(str(guild_id)).get("modules", {})
 
 
 def module(name: str):
@@ -282,7 +262,9 @@ def has_moderation_access(interaction: discord.Interaction, cfg: dict) -> bool:
         return False
     if interaction.user.id == interaction.guild.owner_id:
         return True
-    if interaction.user.guild_permissions.manage_guild or interaction.user.guild_permissions.moderate_members:
+    if PERMISSION_SERVICE.require_permissions(interaction.user, ["manage_guild"]) or PERMISSION_SERVICE.require_permissions(
+        interaction.user, ["moderate_members"]
+    ):
         return True
     allowed_roles = {str(x) for x in cfg.get("moderator_role_ids", []) if str(x).isdigit()}
     if not allowed_roles:
@@ -293,7 +275,7 @@ def has_moderation_access(interaction: discord.Interaction, cfg: dict) -> bool:
 async def enforce_command_rate_limit(interaction: discord.Interaction, command_name: str) -> bool:
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
         return False
-    allowed, retry_after = ABUSE_GUARD.allow(interaction.guild.id, interaction.user.id, command_name)
+    allowed, retry_after = await ABUSE_SERVICE.allow(interaction.guild.id, interaction.user.id, command_name)
     if allowed:
         return True
     if not interaction.response.is_done():
@@ -507,55 +489,26 @@ async def _archive_ticket_and_delete(channel: discord.TextChannel, actor: discor
 
 
 async def add_warning(guild_id: int, user_id: int, moderator_id: int, reason: str):
-    now = int(time.time())
-    await REPO.pool.execute(
-        """
-        INSERT INTO moderation_warnings (guild_id, user_id, moderator_id, reason, created_at, active)
-        VALUES (?, ?, ?, ?, ?, 1)
-        """,
-        (str(guild_id), str(user_id), str(moderator_id), str(reason or "")[:500], now),
-    )
+    await MODERATION_SERVICE.add_warning(guild_id, user_id, moderator_id, reason)
 
 
 async def count_active_warnings(guild_id: int, user_id: int) -> int:
-    row = await REPO.pool.fetchone(
-        "SELECT COUNT(*) AS c FROM moderation_warnings WHERE guild_id=? AND user_id=? AND active=1",
-        (str(guild_id), str(user_id)),
-    )
-    return int((row or {}).get("c", 0))
+    return await MODERATION_SERVICE.count_active_warnings(guild_id, user_id)
 
 
 async def clear_active_warnings(guild_id: int, user_id: int) -> int:
-    return await REPO.pool.execute(
-        "UPDATE moderation_warnings SET active=0 WHERE guild_id=? AND user_id=? AND active=1",
-        (str(guild_id), str(user_id)),
-    )
+    return await MODERATION_SERVICE.clear_active_warnings(guild_id, user_id)
 
 
 async def add_audit(guild_id: int, actor: discord.Member, action_type: str, target_id: int = 0, metadata: dict | None = None):
-    await REPO.add_audit_event(
-        guild_id=str(guild_id),
-        actor_id=str(actor.id),
+    await MODERATION_SERVICE.add_audit(
+        guild_id=guild_id,
+        actor_id=actor.id,
         actor_name=str(actor),
-        action_type=str(action_type),
-        target_id=str(target_id or ""),
+        action_type=action_type,
+        target_id=target_id,
         metadata=metadata or {},
-        created_at=int(time.time()),
     )
-
-
-def moderation_target_error(actor: discord.Member, target: discord.Member) -> str:
-    if actor.id == target.id:
-        return "You cannot target yourself."
-    if target.id == actor.guild.owner_id:
-        return "You cannot target the server owner."
-    if target.id == actor.guild.me.id:
-        return "You cannot target the bot."
-    if actor.id != actor.guild.owner_id and target.top_role >= actor.top_role:
-        return "Target has equal or higher role."
-    if target.top_role >= actor.guild.me.top_role:
-        return "Bot role is not high enough."
-    return ""
 
 
 async def _run_configtest(message: discord.Message):
@@ -724,7 +677,7 @@ async def _run_configtest(message: discord.Message):
     ch_mod_logs = await ensure_channel("mod-logs", cat_staff, ow_staff, "Moderation and member action logs.")
     ch_bot_commands = await ensure_channel("bot-commands", cat_staff, ow_staff, "Bot/admin command channel.")
 
-    cfg = CONFIG_ENGINE.get_guild(str(guild.id))
+    cfg = CONFIG_SERVICE.get_guild_config(str(guild.id))
     modules_cfg = cfg.setdefault("modules", {})
 
     welcome_cfg = modules_cfg.setdefault("welcome", {})
@@ -810,14 +763,14 @@ async def _run_configtest(message: discord.Message):
         str(ch_open_ticket.id),
     ]
 
-    CONFIG_ENGINE.save_module(str(guild.id), "welcome", welcome_cfg)
-    CONFIG_ENGINE.save_module(str(guild.id), "logging", logging_cfg)
-    CONFIG_ENGINE.save_module(str(guild.id), "autorole", autorole_cfg)
-    CONFIG_ENGINE.save_module(str(guild.id), "moderation_tools", moderation_cfg_local)
-    CONFIG_ENGINE.save_module(str(guild.id), "commands", commands_cfg_local)
-    CONFIG_ENGINE.save_module(str(guild.id), "reaction_roles", reaction_cfg)
-    CONFIG_ENGINE.save_module(str(guild.id), "automod", automod_cfg)
-    CONFIG_ENGINE.save_module(str(guild.id), "settings", settings_cfg)
+    CONFIG_SERVICE.update_guild_config(str(guild.id), "welcome", welcome_cfg)
+    CONFIG_SERVICE.update_guild_config(str(guild.id), "logging", logging_cfg)
+    CONFIG_SERVICE.update_guild_config(str(guild.id), "autorole", autorole_cfg)
+    CONFIG_SERVICE.update_guild_config(str(guild.id), "moderation_tools", moderation_cfg_local)
+    CONFIG_SERVICE.update_guild_config(str(guild.id), "commands", commands_cfg_local)
+    CONFIG_SERVICE.update_guild_config(str(guild.id), "reaction_roles", reaction_cfg)
+    CONFIG_SERVICE.update_guild_config(str(guild.id), "automod", automod_cfg)
+    CONFIG_SERVICE.update_guild_config(str(guild.id), "settings", settings_cfg)
 
     await message.channel.send(
         (
@@ -864,7 +817,7 @@ async def on_ready():
         _attach_task_logging(
             asyncio.create_task(
                 _run_with_timeout(
-                    CUSTOM_COMMANDS.sync(tree, CONFIG_ENGINE),
+                    CUSTOM_COMMAND_SERVICE.sync(tree, CONFIG_ENGINE),
                     "custom_commands_sync",
                     timeout_sec=TREE_SYNC_TIMEOUT_SEC,
                 )
@@ -882,6 +835,11 @@ async def on_ready():
 async def on_disconnect():
     RUNTIME.gateway_reconnects += 1
     RUNTIME.last_disconnect_at = int(time.time())
+
+
+@bot.event
+async def on_error(event_method, *args, **kwargs):
+    LOGGER.exception("discord_global_error event=%s args=%s kwargs=%s", event_method, len(args), len(kwargs))
 
 
 @bot.event
@@ -1172,13 +1130,15 @@ async def warn(interaction: discord.Interaction, member: discord.Member, reason:
     if not moderation_command_enabled(interaction.guild.id, cfg, "command_warn"):
         await interaction.response.send_message("This command is disabled on this server.", ephemeral=True)
         return
-    if not has_moderation_access(interaction, cfg):
-        await interaction.response.send_message("Missing moderation access.", ephemeral=True)
-        return
     if not await enforce_command_rate_limit(interaction, "warn"):
         return
-    err = moderation_target_error(interaction.user, member)
-    if err:
+    ok, err = PERMISSION_SERVICE.validate_moderation_action(
+        interaction.user,
+        member,
+        "warn",
+        {str(x) for x in cfg.get("moderator_role_ids", []) if str(x).isdigit()},
+    )
+    if not ok:
         await interaction.response.send_message(err, ephemeral=True)
         return
 
@@ -1283,13 +1243,15 @@ async def timeout(interaction: discord.Interaction, member: discord.Member, minu
     if not moderation_command_enabled(interaction.guild.id, cfg, "command_timeout"):
         await interaction.response.send_message("This command is disabled on this server.", ephemeral=True)
         return
-    if not has_moderation_access(interaction, cfg):
-        await interaction.response.send_message("Missing moderation access.", ephemeral=True)
-        return
     if not await enforce_command_rate_limit(interaction, "timeout"):
         return
-    err = moderation_target_error(interaction.user, member)
-    if err:
+    ok, err = PERMISSION_SERVICE.validate_moderation_action(
+        interaction.user,
+        member,
+        "timeout",
+        {str(x) for x in cfg.get("moderator_role_ids", []) if str(x).isdigit()},
+    )
+    if not ok:
         await interaction.response.send_message(err, ephemeral=True)
         return
     minutes = max(1, min(40320, int(minutes)))
@@ -1316,13 +1278,15 @@ async def kick(interaction: discord.Interaction, member: discord.Member, reason:
     if not moderation_command_enabled(interaction.guild.id, cfg, "command_kick"):
         await interaction.response.send_message("This command is disabled on this server.", ephemeral=True)
         return
-    if not has_moderation_access(interaction, cfg):
-        await interaction.response.send_message("Missing moderation access.", ephemeral=True)
-        return
     if not await enforce_command_rate_limit(interaction, "kick"):
         return
-    err = moderation_target_error(interaction.user, member)
-    if err:
+    ok, err = PERMISSION_SERVICE.validate_moderation_action(
+        interaction.user,
+        member,
+        "kick",
+        {str(x) for x in cfg.get("moderator_role_ids", []) if str(x).isdigit()},
+    )
+    if not ok:
         await interaction.response.send_message(err, ephemeral=True)
         return
     await member.kick(reason=reason[:500])
@@ -1347,13 +1311,15 @@ async def ban(interaction: discord.Interaction, member: discord.Member, reason: 
     if not moderation_command_enabled(interaction.guild.id, cfg, "command_ban"):
         await interaction.response.send_message("This command is disabled on this server.", ephemeral=True)
         return
-    if not has_moderation_access(interaction, cfg):
-        await interaction.response.send_message("Missing moderation access.", ephemeral=True)
-        return
     if not await enforce_command_rate_limit(interaction, "ban"):
         return
-    err = moderation_target_error(interaction.user, member)
-    if err:
+    ok, err = PERMISSION_SERVICE.validate_moderation_action(
+        interaction.user,
+        member,
+        "ban",
+        {str(x) for x in cfg.get("moderator_role_ids", []) if str(x).isdigit()},
+    )
+    if not ok:
         await interaction.response.send_message(err, ephemeral=True)
         return
     delete_days = max(0, min(7, int(delete_days)))
@@ -1387,7 +1353,7 @@ async def reloadconfig(interaction: discord.Interaction):
         _ = CONFIG_ENGINE.get_all()
         REGISTRY.hot_reload()
         await _run_with_timeout(
-            CUSTOM_COMMANDS.sync(tree, CONFIG_ENGINE),
+            CUSTOM_COMMAND_SERVICE.sync(tree, CONFIG_ENGINE),
             "custom_commands_sync_reload",
             timeout_sec=TREE_SYNC_TIMEOUT_SEC,
         )

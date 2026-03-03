@@ -7,14 +7,18 @@ import os
 import time
 import uuid
 
+from repositories.scheduler_repository import SchedulerRepository
+
 
 class TaskScheduler:
     def __init__(self, repo):
         self.repo = repo
+        self.scheduler_repository = SchedulerRepository(repo.pool)
         self._heap = []
         self._known_ids = set()
         self._running = False
         self._bootstrapped = False
+        self._lock = asyncio.Lock()
         self._logger = logging.getLogger("discordbot.scheduler")
         self._handler_timeout_sec = float(os.getenv("TASK_HANDLER_TIMEOUT_SEC", "15"))
         self._refresh_interval_sec = float(os.getenv("SCHEDULER_REFRESH_SEC", "30"))
@@ -33,48 +37,41 @@ class TaskScheduler:
 
     async def add_task(self, guild_id: str, run_at: int, priority: int, payload: dict):
         task_id = str(uuid.uuid4())
-        heapq.heappush(self._heap, (run_at, priority, task_id, guild_id, payload, 0))
-        self._known_ids.add(task_id)
-        await self.repo.pool.execute(
-            "INSERT OR REPLACE INTO scheduled_tasks (id, guild_id, run_at, priority, payload, status) VALUES (?, ?, ?, ?, ?, ?)",
-            (task_id, guild_id, run_at, priority, json.dumps(payload, ensure_ascii=False), "pending"),
-        )
+        async with self._lock:
+            heapq.heappush(self._heap, (run_at, priority, task_id, guild_id, payload, 0))
+            self._known_ids.add(task_id)
+        await self.scheduler_repository.insert_task(task_id, guild_id, run_at, priority, payload)
         return task_id
 
     async def load_pending(self, reset: bool = False):
-        await self.repo.pool.execute(
-            "UPDATE scheduled_tasks SET status='pending' WHERE status='running'"
-        )
-        rows = await self.repo.pool.fetchall(
-            """
-            SELECT id, guild_id, run_at, priority, payload
-            FROM scheduled_tasks
-            WHERE status='pending'
-            ORDER BY run_at ASC, priority ASC
-            """
-        )
+        await self.scheduler_repository.reset_running_to_pending()
+        rows = await self.scheduler_repository.load_pending()
         if reset:
-            self._heap.clear()
-            self._known_ids.clear()
+            async with self._lock:
+                self._heap.clear()
+                self._known_ids.clear()
         loaded = 0
         for row in rows:
             task_id = str(row.get("id", ""))
-            if not task_id or task_id in self._known_ids:
-                continue
             payload = self._parse_payload(row.get("payload", "{}"))
-            heapq.heappush(
-                self._heap,
-                (
-                    int(row.get("run_at", int(time.time()))),
-                    int(row.get("priority", 0)),
-                    task_id,
-                    str(row.get("guild_id", "")),
-                    payload,
-                    0,
-                ),
-            )
-            self._known_ids.add(task_id)
-            loaded += 1
+            if not task_id:
+                continue
+            async with self._lock:
+                if task_id in self._known_ids:
+                    continue
+                heapq.heappush(
+                    self._heap,
+                    (
+                        int(row.get("run_at", int(time.time()))),
+                        int(row.get("priority", 0)),
+                        task_id,
+                        str(row.get("guild_id", "")),
+                        payload,
+                        0,
+                    ),
+                )
+                self._known_ids.add(task_id)
+                loaded += 1
         if reset or loaded:
             self._logger.info("scheduler_loaded_pending loaded=%s queued=%s", loaded, len(self._heap))
 
@@ -95,24 +92,25 @@ class TaskScheduler:
                 except Exception:
                     self._logger.exception("scheduler_periodic_refresh_failed")
             now = int(time.time())
-            if not self._heap:
+            async with self._lock:
+                has_items = bool(self._heap)
+            if not has_items:
                 await asyncio.sleep(0.4)
                 continue
-            run_at, priority, task_id, guild_id, payload, retries = self._heap[0]
+            async with self._lock:
+                run_at, priority, task_id, guild_id, payload, retries = self._heap[0]
             if run_at > now:
                 await asyncio.sleep(min(1.0, run_at - now))
                 continue
-            heapq.heappop(self._heap)
-            self._known_ids.discard(task_id)
+            async with self._lock:
+                heapq.heappop(self._heap)
+                self._known_ids.discard(task_id)
             try:
-                claimed = await self.repo.pool.execute(
-                    "UPDATE scheduled_tasks SET status='running' WHERE id=? AND status='pending'",
-                    (task_id,),
-                )
+                claimed = await self.scheduler_repository.claim_task(task_id)
                 if claimed == 0:
                     continue
                 await asyncio.wait_for(handler(guild_id, payload), timeout=self._handler_timeout_sec)
-                await self.repo.pool.execute("UPDATE scheduled_tasks SET status='done' WHERE id=?", (task_id,))
+                await self.scheduler_repository.set_status(task_id, "done")
             except asyncio.TimeoutError:
                 self._logger.warning(
                     "scheduler_task_timeout task_id=%s guild_id=%s timeout_sec=%s retries=%s",
@@ -123,12 +121,10 @@ class TaskScheduler:
                 )
                 if retries < 3:
                     next_run = now + (2 ** retries)
-                    heapq.heappush(self._heap, (next_run, priority, task_id, guild_id, payload, retries + 1))
-                    self._known_ids.add(task_id)
-                    await self.repo.pool.execute(
-                        "UPDATE scheduled_tasks SET status='pending', run_at=? WHERE id=?",
-                        (next_run, task_id),
-                    )
+                    async with self._lock:
+                        heapq.heappush(self._heap, (next_run, priority, task_id, guild_id, payload, retries + 1))
+                        self._known_ids.add(task_id)
+                    await self.scheduler_repository.set_status(task_id, "pending", run_at=next_run)
                     self._logger.info(
                         "scheduler_task_retry_scheduled task_id=%s guild_id=%s next_run=%s retry=%s",
                         task_id,
@@ -137,7 +133,7 @@ class TaskScheduler:
                         retries + 1,
                     )
                 else:
-                    await self.repo.pool.execute("UPDATE scheduled_tasks SET status='dead' WHERE id=?", (task_id,))
+                    await self.scheduler_repository.set_status(task_id, "dead")
                     self._logger.error(
                         "scheduler_task_dead task_id=%s guild_id=%s",
                         task_id,
@@ -153,12 +149,10 @@ class TaskScheduler:
                 )
                 if retries < 3:
                     next_run = now + (2 ** retries)
-                    heapq.heappush(self._heap, (next_run, priority, task_id, guild_id, payload, retries + 1))
-                    self._known_ids.add(task_id)
-                    await self.repo.pool.execute(
-                        "UPDATE scheduled_tasks SET status='pending', run_at=? WHERE id=?",
-                        (next_run, task_id),
-                    )
+                    async with self._lock:
+                        heapq.heappush(self._heap, (next_run, priority, task_id, guild_id, payload, retries + 1))
+                        self._known_ids.add(task_id)
+                    await self.scheduler_repository.set_status(task_id, "pending", run_at=next_run)
                     self._logger.info(
                         "scheduler_task_retry_scheduled task_id=%s guild_id=%s next_run=%s retry=%s",
                         task_id,
@@ -167,13 +161,13 @@ class TaskScheduler:
                         retries + 1,
                     )
                 else:
-                    await self.repo.pool.execute("UPDATE scheduled_tasks SET status='dead' WHERE id=?", (task_id,))
+                    await self.scheduler_repository.set_status(task_id, "dead")
                     self._logger.error(
                         "scheduler_task_dead task_id=%s guild_id=%s",
                         task_id,
                         guild_id,
                     )
-            await self.repo.pool.execute("DELETE FROM scheduled_tasks WHERE status='done' AND run_at < ?", (now - 86400,))
+            await self.scheduler_repository.cleanup_done_before(now - 86400)
 
     def stop(self):
         self._running = False
