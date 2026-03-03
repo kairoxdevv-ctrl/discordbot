@@ -17,9 +17,11 @@ class CustomCommandService:
         self._cooldowns: dict[tuple[int, int, str], float] = defaultdict(float)
 
     async def sync(self, tree, config_engine):
+        """Rebuild custom command registrations from persisted configuration."""
         await self.manager.sync(tree, config_engine)
 
     async def allow_execution(self, guild_id: int, user_id: int, command_name: str) -> tuple[bool, int]:
+        """Check and apply per-user command cooldown for custom command execution."""
         now = time.time()
         key = (int(guild_id), int(user_id), str(command_name))
         async with self._lock:

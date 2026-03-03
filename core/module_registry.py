@@ -1,3 +1,5 @@
+"""Core layer: runtime module discovery, loading, and health tracking."""
+
 import importlib.util
 import logging
 from dataclasses import dataclass
@@ -6,6 +8,8 @@ from pathlib import Path
 
 @dataclass
 class ModuleInfo:
+    """Metadata container for discovered runtime module state."""
+
     name: str
     path: str
     version: str
@@ -15,6 +19,14 @@ class ModuleInfo:
 
 
 class ModuleRegistry:
+    """Core module loader and dependency resolver.
+
+    Responsibilities:
+    - Discover feature modules from filesystem.
+    - Track health/version metadata and dependency status.
+    Not responsible for invoking module business logic.
+    """
+
     def __init__(self, modules_dir: Path):
         self.modules_dir = modules_dir
         self.registry = {}
@@ -24,6 +36,7 @@ class ModuleRegistry:
         }
 
     def discover(self):
+        """Discover and import module files from modules directory."""
         infos = {}
         for file in sorted(self.modules_dir.glob("*.py")):
             if file.name.startswith("__"):
@@ -45,6 +58,7 @@ class ModuleRegistry:
         return infos
 
     def resolve(self):
+        """Apply dependency graph checks to discovered module health map."""
         for name, deps in self.dependencies.items():
             info = self.registry.get(name)
             if not info or not info.healthy:
@@ -57,6 +71,7 @@ class ModuleRegistry:
         return self.registry
 
     def health(self):
+        """Return lightweight health snapshot for dashboard/bot status views."""
         return {
             name: {
                 "version": info.version,
@@ -67,12 +82,14 @@ class ModuleRegistry:
         }
 
     def get(self, name):
+        """Return healthy module instance by name, else None."""
         info = self.registry.get(name)
         if not info or not info.healthy:
             return None
         return info.instance
 
     def hot_reload(self):
+        """Refresh discovery and dependency resolution in one operation."""
         self.discover()
         self.resolve()
         return self.health()

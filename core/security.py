@@ -1,3 +1,5 @@
+"""Core layer: request security helpers (rate limiting, CSRF, sanitization)."""
+
 import secrets
 import threading
 import time
@@ -5,6 +7,14 @@ from collections import defaultdict, deque
 
 
 class RateLimiter:
+    """In-memory HTTP request limiter keyed by IP/session/route.
+
+    Responsibilities:
+    - Enforce per-window request caps.
+    - Periodically clean stale counters.
+    Not responsible for auth/permission decisions.
+    """
+
     def __init__(self):
         self.ip_hits = defaultdict(deque)
         self.session_hits = defaultdict(deque)
@@ -35,6 +45,7 @@ class RateLimiter:
         return len(q) <= limit
 
     def allow(self, ip, session_id, route):
+        """Return True when request is inside route/session/ip rate budgets."""
         with self._lock:
             now = time.time()
             if (now - self._last_cleanup) > 300:

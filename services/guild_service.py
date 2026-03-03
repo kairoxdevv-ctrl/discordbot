@@ -10,9 +10,11 @@ class GuildService:
         self.runtime = runtime
 
     def get_guild(self, guild_id: int):
+        """Return guild from runtime cache or None when unavailable."""
         return self.runtime.get_guild(int(guild_id))
 
     def guild_rows(self) -> list[dict]:
+        """Return lightweight guild rows for dashboard selectors."""
         bot = getattr(self.runtime, "bot", None)
         if not bot:
             return []

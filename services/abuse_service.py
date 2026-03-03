@@ -37,6 +37,7 @@ class AbuseService:
         self._last_cleanup = 0.0
 
     async def allow(self, guild_id: int, user_id: int, command_name: str) -> tuple[bool, int]:
+        """Evaluate whether a command invocation is allowed under rate/burst limits."""
         now = time.time()
         user_key = (int(guild_id), int(user_id), str(command_name))
         guild_key = (int(guild_id), str(command_name))

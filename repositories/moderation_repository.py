@@ -10,6 +10,7 @@ class ModerationRepository:
         self.pool = pool
 
     async def add_warning(self, guild_id: int, user_id: int, moderator_id: int, reason: str, created_at: int) -> None:
+        """Insert active warning row for a guild member."""
         await self.pool.execute(
             """
             INSERT INTO moderation_warnings (guild_id, user_id, moderator_id, reason, created_at, active)
@@ -19,6 +20,7 @@ class ModerationRepository:
         )
 
     async def count_active_warnings(self, guild_id: int, user_id: int) -> int:
+        """Return count of active warnings for a member in guild."""
         row = await self.pool.fetchone(
             "SELECT COUNT(*) AS c FROM moderation_warnings WHERE guild_id=? AND user_id=? AND active=1",
             (str(guild_id), str(user_id)),
@@ -26,6 +28,7 @@ class ModerationRepository:
         return int((row or {}).get("c", 0))
 
     async def clear_active_warnings(self, guild_id: int, user_id: int) -> int:
+        """Mark active warnings inactive and return affected row count."""
         return await self.pool.execute(
             "UPDATE moderation_warnings SET active=0 WHERE guild_id=? AND user_id=? AND active=1",
             (str(guild_id), str(user_id)),

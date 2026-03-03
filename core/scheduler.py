@@ -1,3 +1,5 @@
+"""Core layer: durable async task scheduler orchestration."""
+
 import asyncio
 import ast
 import heapq
@@ -11,6 +13,14 @@ from repositories.scheduler_repository import SchedulerRepository
 
 
 class TaskScheduler:
+    """Core async scheduler coordinating durable tasks and handler execution.
+
+    Responsibilities:
+    - Keep in-memory priority queue synchronized with persistent task store.
+    - Execute due jobs with retry and timeout policies.
+    Not responsible for task business logic payload semantics.
+    """
+
     def __init__(self, repo):
         self.repo = repo
         self.scheduler_repository = SchedulerRepository(repo.pool)
@@ -36,6 +46,7 @@ class TaskScheduler:
                 return {}
 
     async def add_task(self, guild_id: str, run_at: int, priority: int, payload: dict):
+        """Create pending task and queue it for execution."""
         task_id = str(uuid.uuid4())
         async with self._lock:
             heapq.heappush(self._heap, (run_at, priority, task_id, guild_id, payload, 0))
@@ -44,6 +55,7 @@ class TaskScheduler:
         return task_id
 
     async def load_pending(self, reset: bool = False):
+        """Load pending tasks from repository into in-memory queue."""
         await self.scheduler_repository.reset_running_to_pending()
         rows = await self.scheduler_repository.load_pending()
         if reset:
@@ -76,6 +88,7 @@ class TaskScheduler:
             self._logger.info("scheduler_loaded_pending loaded=%s queued=%s", loaded, len(self._heap))
 
     async def run(self, handler):
+        """Run scheduler loop until stopped, executing due tasks via handler."""
         self._running = True
         if not self._bootstrapped:
             try:
@@ -170,7 +183,9 @@ class TaskScheduler:
             await self.scheduler_repository.cleanup_done_before(now - 86400)
 
     def stop(self):
+        """Request scheduler loop stop on next iteration."""
         self._running = False
 
     def queue_length(self):
+        """Return current in-memory queue length."""
         return len(self._heap)

@@ -1,3 +1,5 @@
+"""Feature module: moderation/logging embeds sent to configured log channels."""
+
 VERSION = "1.1.0"
 import logging
 from datetime import datetime, timezone

@@ -1,3 +1,5 @@
+"""Core layer: structured logging formatters and Discord webhook log transport."""
+
 import json
 import logging
 import os
@@ -13,7 +15,10 @@ from urllib import request as urlrequest
 
 
 class JsonFormatter(logging.Formatter):
+    """Serialize logging records into JSON payloads for structured log ingestion."""
+
     def format(self, record: logging.LogRecord) -> str:
+        """Convert logging record to JSON string with common runtime metadata."""
         payload = {
             "ts": datetime.now(timezone.utc).isoformat(),
             "level": record.levelname,
@@ -52,6 +57,14 @@ def _sanitize_text(text: str) -> str:
 
 
 class DiscordWebhookHandler(logging.Handler):
+    """Asynchronous logging handler delivering entries to Discord webhooks.
+
+    Responsibilities:
+    - Route events by level.
+    - Enforce queue + per-minute rate control.
+    Not responsible for primary stdout logging sink.
+    """
+
     def __init__(self, routes: dict, timeout_sec: float = 4.0, min_level: int = logging.WARNING):
         super().__init__(level=logging.INFO)
         self.routes = routes
@@ -78,6 +91,7 @@ class DiscordWebhookHandler(logging.Handler):
         return self.routes.get("info", "") or self.routes.get("warning", "") or self.routes.get("error", "") or self.routes.get("critical", "")
 
     def emit(self, record: logging.LogRecord):
+        """Queue formatted log event for background webhook sender thread."""
         try:
             if record.levelno < self.min_level:
                 return

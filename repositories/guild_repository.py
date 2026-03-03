@@ -21,6 +21,7 @@ class GuildRepository:
         metadata: dict,
         created_at: int,
     ) -> None:
+        """Insert audit event row for guild-scoped operational tracing."""
         await self.pool.execute(
             """
             INSERT INTO audit_events (guild_id, actor_id, actor_name, action_type, target_id, metadata, created_at)
@@ -38,6 +39,7 @@ class GuildRepository:
         )
 
     async def recent_audit_events(self, guild_id: str, limit: int = 200) -> list[dict]:
+        """Fetch recent audit events sorted by timestamp descending."""
         lim = max(1, min(500, int(limit)))
         return await self.pool.fetchall(
             """

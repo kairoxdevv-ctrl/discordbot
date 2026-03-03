@@ -1,3 +1,5 @@
+"""Core layer: authenticated websocket server for dashboard realtime subscriptions."""
+
 import asyncio
 import json
 import logging
@@ -12,6 +14,14 @@ from websockets.server import WebSocketServerProtocol
 
 
 class WsAuthManager:
+    """Issue and validate short-lived websocket auth tokens.
+
+    Responsibilities:
+    - Bind one token to one guild scope and expiration.
+    - Enforce single-use semantics after successful validation.
+    Not responsible for user permission checks outside token issuance.
+    """
+
     def __init__(self):
         self._tokens = {}
         self._lock = threading.RLock()
@@ -22,6 +32,7 @@ class WsAuthManager:
             self._tokens.pop(tok, None)
 
     def issue(self, user_id: str, guild_id: str, ttl_sec: int = 120):
+        """Create scoped token for websocket subscription handshake."""
         import secrets
 
         token = secrets.token_urlsafe(32)
@@ -37,6 +48,7 @@ class WsAuthManager:
         return token
 
     def validate(self, token: str, guild_id: str):
+        """Validate token scope/expiration and consume it on success."""
         now = int(time.time())
         with self._lock:
             self._prune_expired(now)
@@ -58,12 +70,15 @@ WS_MAX_CONN_PER_GUILD = max(1, min(500, int(os.getenv("WS_MAX_CONN_PER_GUILD", "
 
 
 class WsConnectionRegistry:
+    """Track websocket connection capacity globally and per guild."""
+
     def __init__(self):
         self._lock = threading.RLock()
         self._total = 0
         self._guild_counts: dict[str, int] = {}
 
     def try_open(self, guild_id: str) -> bool:
+        """Reserve connection slot if capacity allows."""
         with self._lock:
             if self._total >= WS_MAX_CONNECTIONS:
                 return False
@@ -75,6 +90,7 @@ class WsConnectionRegistry:
             return True
 
     def close(self, guild_id: str):
+        """Release connection slot for guild on disconnect."""
         with self._lock:
             self._total = max(0, self._total - 1)
             per_guild = int(self._guild_counts.get(guild_id, 0))

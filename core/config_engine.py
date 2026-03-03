@@ -1,3 +1,5 @@
+"""Core layer: persistent configuration engine with schema normalization and caching."""
+
 import json
 import logging
 import os
@@ -35,6 +37,8 @@ LOGGER = logging.getLogger("discordbot.config_engine")
 
 
 class RWLock:
+    """Simple reentrant lock wrapper used by config engine critical sections."""
+
     def __init__(self):
         self._lock = threading.RLock()
 
@@ -71,6 +75,7 @@ class ConfigEngineV3:
         self._load(force=True)
 
     def close(self):
+        """Close underlying SQLite connection for graceful shutdown."""
         try:
             self._conn.close()
         except Exception:
@@ -287,11 +292,13 @@ class ConfigEngineV3:
         self._conn.commit()
 
     def get_all(self):
+        """Return deep-copied map of all guild configuration payloads."""
         self._load()
         with self.lock:
             return json.loads(json.dumps(self._data))
 
     def get_guild(self, guild_id):
+        """Return deep-copied guild config, creating defaults when absent."""
         self._load()
         gid = str(guild_id)
         with self.lock:
@@ -312,6 +319,7 @@ class ConfigEngineV3:
             return json.loads(json.dumps(entry))
 
     def save_module(self, guild_id, module_name, payload):
+        """Persist one module payload for a guild and trigger reload callback."""
         self._load()
         gid = str(guild_id)
         with self.lock:

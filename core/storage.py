@@ -1,3 +1,5 @@
+"""Core layer: SQLite pool and shared repository primitives."""
+
 import asyncio
 import json
 import queue
@@ -8,6 +10,14 @@ from pathlib import Path
 
 
 class SQLitePool:
+    """Thread-safe SQLite connection pool used by repository layer.
+
+    Responsibilities:
+    - Manage reusable connections and schema bootstrapping.
+    - Execute blocking SQLite work in executor-friendly wrappers.
+    Not responsible for domain/business validation.
+    """
+
     def __init__(self, db_path: Path, size: int = 4):
         self.db_path = str(db_path)
         self.size = max(2, size)
@@ -22,6 +32,7 @@ class SQLitePool:
             self._pool.put(conn)
 
     def init_schema(self):
+        """Create core tables and indexes required by runtime services."""
         with self._init_lock:
             if self._initialized:
                 return
@@ -91,12 +102,15 @@ class SQLitePool:
                 self.release(conn)
 
     def acquire(self):
+        """Borrow a sqlite connection from pool."""
         return self._pool.get()
 
     def release(self, conn):
+        """Return a sqlite connection back to pool."""
         self._pool.put(conn)
 
     async def execute(self, sql, params=()):
+        """Execute mutating SQL and return affected row count."""
         loop = asyncio.get_running_loop()
 
         def _run():
@@ -112,6 +126,7 @@ class SQLitePool:
         return await loop.run_in_executor(None, _run)
 
     async def fetchone(self, sql, params=()):
+        """Execute query and return first row as dict."""
         loop = asyncio.get_running_loop()
 
         def _run():
@@ -127,6 +142,7 @@ class SQLitePool:
         return await loop.run_in_executor(None, _run)
 
     async def fetchall(self, sql, params=()):
+        """Execute query and return all rows as list of dict."""
         loop = asyncio.get_running_loop()
 
         def _run():
@@ -142,16 +158,26 @@ class SQLitePool:
 
 
 class Repository:
+    """Shared repository utility for events and audit persistence.
+
+    Responsibilities:
+    - Persist generic metrics events and audit rows.
+    - Aggregate event counts for dashboards.
+    Not responsible for access checks or command policy.
+    """
+
     def __init__(self, pool: SQLitePool):
         self.pool = pool
 
     async def add_event(self, guild_id: str, event_type: str, created_at: int, payload: dict):
+        """Insert metrics event row for a guild."""
         await self.pool.execute(
             "INSERT INTO events (guild_id, event_type, created_at, payload) VALUES (?, ?, ?, ?)",
             (guild_id, event_type, created_at, json.dumps(payload, ensure_ascii=False)),
         )
 
     async def aggregate_events(self, guild_id: str, from_ts: int):
+        """Aggregate counts by event type from a start timestamp."""
         rows = await self.pool.fetchall(
             """
             SELECT event_type, COUNT(*) AS c
@@ -173,6 +199,7 @@ class Repository:
         metadata: dict | None = None,
         created_at: int = 0,
     ):
+        """Insert structured audit event for moderation/support/config actions."""
         await self.pool.execute(
             """
             INSERT INTO audit_events (guild_id, actor_id, actor_name, action_type, target_id, metadata, created_at)

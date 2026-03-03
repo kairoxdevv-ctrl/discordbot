@@ -1,3 +1,5 @@
+"""Feature module: runtime guild statistics helpers."""
+
 VERSION = "1.1.0"
 def build_stats(guild, bot_latency_ms: int) -> dict:
     if guild is None:

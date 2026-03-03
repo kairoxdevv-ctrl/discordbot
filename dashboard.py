@@ -1,3 +1,5 @@
+"""Presentation layer for HTTP dashboard routes, auth flow, and API endpoints."""
+
 import asyncio
 import json
 import logging
@@ -60,6 +62,8 @@ ALLOWED_ORIGINS = {
     if x.strip()
 }
 SAFE_TEXT_RE = re.compile(r"^[\w\s\-\.,:;!?@#&()/+*'\"<>=%]*$")
+MAX_CUSTOM_COMMANDS_PER_GUILD = max(1, min(200, int(os.getenv("MAX_CUSTOM_COMMANDS_PER_GUILD", "50"))))
+MAX_CUSTOM_RESPONSE_LEN = max(10, min(4000, int(os.getenv("MAX_CUSTOM_RESPONSE_LEN", "1500"))))
 
 MANAGE_GUILD = 1 << 5
 GUILDS_REFRESH_TTL_SEC = max(5, int(os.getenv("GUILDS_REFRESH_TTL_SEC", "45") or "45"))
@@ -369,6 +373,8 @@ threading.Thread(target=_memory_monitor_loop, daemon=True).start()
 
 
 class RuntimeState:
+    """Presentation-layer runtime bridge exposing bot cache/state to dashboard."""
+
     def __init__(self):
         self.bot = None
         self.gateway_reconnects = 0
@@ -376,14 +382,17 @@ class RuntimeState:
         self.shard_ready = {}
 
     def set_bot(self, bot):
+        """Attach current bot instance reference."""
         self.bot = bot
 
     def get_guild(self, guild_id: int):
+        """Return cached guild object from bot runtime if available."""
         if not self.bot:
             return None
         return self.bot.get_guild(guild_id)
 
     def latency_ms(self):
+        """Return gateway latency in milliseconds for health endpoints."""
         if not self.bot:
             return 0
         return int((self.bot.latency or 0.0) * 1000)
@@ -413,6 +422,8 @@ def validate_critical_dependencies():
         raise RuntimeError("static_missing")
     if not SECRET_KEY:
         raise RuntimeError("secret_key_missing")
+    if SUPPORT_REPOSITORY is None or SUPPORT_SERVICE is None:
+        raise RuntimeError("support_services_missing")
     if not CLIENT_ID or not CLIENT_SECRET or not REDIRECT_URI:
         LOGGER.warning("oauth_env_incomplete")
 
@@ -612,6 +623,8 @@ def _init_support_layer():
         audit_callback=_audit_log,
         send_webhook_callback=_support_send_webhook,
     )
+    if SUPPORT_REPOSITORY is None or SUPPORT_SERVICE is None:
+        raise RuntimeError("support_layer_init_failed")
 
 
 _init_support_layer()
@@ -1969,16 +1982,16 @@ def create_app():
                 if not name:
                     continue
                 description = sanitize_text(row[1] if len(row) > 2 else f"Run {name}", 100)
-                response = sanitize_text(row[-1], 1500)
+                response = sanitize_text(row[-1], MAX_CUSTOM_RESPONSE_LEN)
                 if not response:
                     continue
                 commands.append({"name": name, "description": description, "response": response})
-            payload = {"enabled": boolv(data, "enabled", False), "commands": commands[:50]}
+            payload = {"enabled": boolv(data, "enabled", False), "commands": commands[:MAX_CUSTOM_COMMANDS_PER_GUILD]}
         elif module_name == "commands":
             payload = {
                 "enabled": boolv(data, "enabled", True),
                 "custom_commands_enabled": boolv(data, "custom_commands_enabled", True),
-                "custom_commands_max": intv(data, "custom_commands_max", 20, 1, 50),
+                "custom_commands_max": intv(data, "custom_commands_max", 20, 1, MAX_CUSTOM_COMMANDS_PER_GUILD),
                 "custom_response_ephemeral": boolv(data, "custom_response_ephemeral", False),
                 "command_reloadconfig": boolv(data, "command_reloadconfig", True),
                 "command_modules_health": boolv(data, "command_modules_health", True),

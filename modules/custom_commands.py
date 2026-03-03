@@ -1,3 +1,5 @@
+"""Feature module: dynamic custom slash command registration and execution."""
+
 VERSION = "1.1.0"
 import logging
 import os
@@ -26,9 +28,20 @@ RESERVED_NAMES = {
 }
 
 LOGGER = logging.getLogger("discordbot.custom_commands")
+MAX_CUSTOM_COMMANDS = max(1, min(200, int(os.getenv("MAX_CUSTOM_COMMANDS_PER_GUILD", "50"))))
+MAX_CUSTOM_RESPONSE_LEN = max(10, min(4000, int(os.getenv("MAX_CUSTOM_RESPONSE_LEN", "1500"))))
 
 
 class CustomCommandManager:
+    """Feature-layer manager for guild-scoped custom slash commands.
+
+    Responsibilities:
+    - Sanitize command definitions from config.
+    - Register/unregister commands into command tree.
+    - Enforce lightweight per-user cooldown at callback runtime.
+    Not responsible for dashboard permission/auth decisions.
+    """
+
     def __init__(self):
         self._registered = {}
         self._cooldowns = {}
@@ -36,6 +49,7 @@ class CustomCommandManager:
 
     @staticmethod
     def sanitize(commands: list[dict]) -> list[dict]:
+        """Normalize raw custom command rows into safe command definitions."""
         sanitized = []
         for item in commands:
             if not isinstance(item, dict):
@@ -52,11 +66,12 @@ class CustomCommandManager:
             description = description[:100]
             if not response:
                 continue
-            response = response[:1500]
+            response = response[:MAX_CUSTOM_RESPONSE_LEN]
             sanitized.append({"name": name, "description": description, "response": response})
-        return sanitized[:50]
+        return sanitized[:MAX_CUSTOM_COMMANDS]
 
     async def sync(self, tree: app_commands.CommandTree, config_store):
+        """Reconcile command tree registrations with persisted config state."""
         for guild_id, command_names in list(self._registered.items()):
             for command_name in command_names:
                 cmd = tree.get_command(command_name, guild=discord.Object(id=int(guild_id)))
@@ -90,7 +105,7 @@ class CustomCommandManager:
                     max_commands = int(command_cfg.get("custom_commands_max", 20))
                 except Exception:
                     max_commands = 20
-            max_commands = max(1, min(50, max_commands))
+            max_commands = max(1, min(MAX_CUSTOM_COMMANDS, max_commands))
             commands = commands[:max_commands]
             ephemeral = bool(command_cfg.get("custom_response_ephemeral", False)) if isinstance(command_cfg, dict) else False
 

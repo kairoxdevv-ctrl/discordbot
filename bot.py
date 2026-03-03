@@ -1,3 +1,5 @@
+"""Presentation layer for Discord runtime: event handlers and slash command entrypoints."""
+
 import asyncio
 import io
 import logging
@@ -94,6 +96,23 @@ DASHBOARD_THREAD = None
 
 async def _task_handler(guild_id: str, payload: dict):
     REALTIME_BUS.publish(guild_id, {"type": "scheduled_task", "payload": payload, "ts": int(time.time())})
+
+
+def _assert_service_wiring():
+    """Fail fast if core services/repositories were not initialized correctly."""
+    required = {
+        "ABUSE_SERVICE": ABUSE_SERVICE,
+        "PERMISSION_SERVICE": PERMISSION_SERVICE,
+        "MODERATION_SERVICE": MODERATION_SERVICE,
+        "CONFIG_SERVICE": CONFIG_SERVICE,
+        "REALTIME_SERVICE": REALTIME_SERVICE,
+        "CUSTOM_COMMAND_SERVICE": CUSTOM_COMMAND_SERVICE,
+        "MODERATION_REPOSITORY": MODERATION_REPOSITORY,
+        "GUILD_REPOSITORY": GUILD_REPOSITORY,
+    }
+    missing = [name for name, obj in required.items() if obj is None]
+    if missing:
+        raise RuntimeError(f"service_wiring_invalid missing={','.join(missing)}")
 
 
 def _attach_task_logging(task: asyncio.Task, name: str):
@@ -1543,6 +1562,7 @@ tree.add_command(ticket_group)
 def main():
     global DASHBOARD_THREAD
     CONFIG_ENGINE.on_reload = _on_config_reload
+    _assert_service_wiring()
     _validate_startup_dependencies()
     set_module_health_provider(REGISTRY.health)
     set_scheduler_provider(SCHEDULER)

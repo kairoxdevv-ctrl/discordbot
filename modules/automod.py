@@ -1,3 +1,5 @@
+"""Feature module: automatic moderation checks and violation handling."""
+
 VERSION = "1.1.0"
 import logging
 import re
@@ -38,11 +40,14 @@ URL_RE = re.compile(r"(https?://[^\s]+|www\.[^\s]+)", re.IGNORECASE)
 
 
 class SpamTracker:
+    """Sliding-window spam counter for per-user message burst detection."""
+
     def __init__(self):
         self._cache = {}
         self._last_cleanup = 0.0
 
     def add_and_check(self, guild_id: int, user_id: int, window: int, threshold: int) -> bool:
+        """Record message hit and return True when spam threshold is reached."""
         key = (guild_id, user_id)
         now = monotonic()
         q = self._cache.setdefault(key, deque())

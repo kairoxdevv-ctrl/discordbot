@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 import time
+
+LOGGER = logging.getLogger("discordbot.services.support")
 
 
 class SupportService:
@@ -15,10 +18,21 @@ class SupportService:
         self.send_webhook_callback = send_webhook_callback
 
     def get_case(self, case_id: int) -> dict | None:
-        return self.repository.get_case(int(case_id))
+        """Fetch support case by identifier with defensive type checking."""
+        row = self.repository.get_case(int(case_id))
+        if row is None:
+            return None
+        if not isinstance(row, dict):
+            LOGGER.warning("support_get_case_invalid_row case_id=%s", case_id)
+            return None
+        return row
 
     def list_cases(self, where_sql: str, params: tuple, query_text: str) -> list[dict]:
+        """List support cases and apply optional text filtering."""
         rows = self.repository.query_cases(where_sql, params)
+        if not isinstance(rows, list):
+            LOGGER.warning("support_list_cases_invalid_rows type=%s", type(rows).__name__)
+            return []
         q = str(query_text or "").strip().lower()
         if q:
             rows = [
@@ -42,6 +56,7 @@ class SupportService:
         body: str,
         actor_role: str,
     ) -> int:
+        """Create support case, seed first message, and emit realtime/audit side-effects."""
         now = int(time.time())
         case_id = self.repository.create_case(
             (str(guild_id), str(guild_name), str(created_by_id), str(created_by_name), str(subject), str(priority), now, now, now, str(body)[:220], now)
@@ -56,7 +71,12 @@ class SupportService:
         return int(case_id)
 
     def list_messages(self, case_id: int, privileged: bool) -> list[dict]:
-        return self.repository.messages_for_case(int(case_id), bool(privileged))
+        """Return case messages with visibility constraints."""
+        rows = self.repository.messages_for_case(int(case_id), bool(privileged))
+        if not isinstance(rows, list):
+            LOGGER.warning("support_list_messages_invalid_rows case_id=%s", case_id)
+            return []
+        return rows
 
     def add_message(
         self,
@@ -67,6 +87,7 @@ class SupportService:
         body: str,
         visibility: str,
     ) -> None:
+        """Append message to case and update status/SLA fields atomically."""
         case_id = int(case_row.get("id", 0) or 0)
         guild_id = str(case_row.get("guild_id", ""))
         now = int(time.time())
@@ -110,6 +131,7 @@ class SupportService:
         self.audit_callback(guild_id, "support_case_message_added", str(actor_id), str(actor_name), target_id=str(case_id), metadata={"visibility": str(visibility)})
 
     def assign_case(self, case_row: dict, action: str, actor_id: str, actor_name: str) -> None:
+        """Assign or unassign support case and notify listeners."""
         now = int(time.time())
         case_id = int(case_row.get("id", 0) or 0)
         guild_id = str(case_row.get("guild_id", ""))
@@ -118,6 +140,7 @@ class SupportService:
         self.audit_callback(guild_id, "support_case_assignment", str(actor_id), str(actor_name), target_id=str(case_id), metadata={"action": str(action)})
 
     def update_status(self, case_row: dict, status: str, actor_id: str, actor_name: str) -> None:
+        """Change support case status and publish update events."""
         now = int(time.time())
         resolved_at = now if status in {"resolved", "closed"} else 0
         case_id = int(case_row.get("id", 0) or 0)
@@ -127,6 +150,7 @@ class SupportService:
         self.audit_callback(guild_id, "support_case_status_changed", str(actor_id), str(actor_name), target_id=str(case_id), metadata={"status": str(status)})
 
     def maybe_send_sla_alert(self, case_row: dict, is_breached_callback) -> None:
+        """Send SLA alert once per cooldown window when breach criteria are met."""
         if not case_row:
             return
         now = int(time.time())

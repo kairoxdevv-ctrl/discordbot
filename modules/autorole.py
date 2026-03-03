@@ -1,3 +1,5 @@
+"""Feature module: autorole assignment for new members."""
+
 VERSION = "1.1.0"
 import discord
 

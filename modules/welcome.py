@@ -1,3 +1,5 @@
+"""Feature module: welcome message formatting and delivery."""
+
 VERSION = "1.1.0"
 import logging
 
